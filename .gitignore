@@ -1,24 +1,33 @@
-# Rust
-target/
-**/*.rs.bk
-
-# Node
-node_modules/
+# Logs
+logs
+*.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Tauri
-src-tauri/target/
+node_modules
+dist
+dist-ssr
+*.local
 
-# macOS
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
-*.swp
-*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# IDE
-.idea/
-.vscode/
-*.iml
+# Rust / Tauri build artifacts
+src-tauri/target/
+*.dmg
 
-# Env
+# Environment
 .env
 .env.local
+.env.*.local

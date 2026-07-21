@@ -1,0 +1,140 @@
+/* Pi Desktop - Global Styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #1e1e1e;
+  color: #cccccc;
+}
+
+/* Markdown content styles */
+.markdown-content {
+  line-height: 1.6;
+  word-wrap: break-word;
+  font-size: 14px;
+}
+
+.markdown-content p {
+  margin-bottom: 8px;
+}
+
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content pre {
+  margin: 8px 0;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.markdown-content code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.85em;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.markdown-content li {
+  margin-bottom: 4px;
+}
+
+.markdown-content h1, .markdown-content h2, .markdown-content h3,
+.markdown-content h4, .markdown-content h5, .markdown-content h6 {
+  color: #e0e0e0;
+  margin: 16px 0 8px;
+  font-weight: 600;
+}
+
+.markdown-content h1 { font-size: 1.4em; border-bottom: 1px solid #2d2d2d; padding-bottom: 6px; }
+.markdown-content h2 { font-size: 1.2em; }
+.markdown-content h3 { font-size: 1.1em; }
+
+.markdown-content strong {
+  color: #e0e0e0;
+  font-weight: 600;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid #2d2d2d;
+  margin: 16px 0;
+}
+
+/* Animations */
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Scrollbar styles */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Ant Design dark theme overrides */
+.ant-collapse-header {
+  padding: 6px 12px !important;
+}
+
+.ant-collapse-content-box {
+  padding: 0 !important;
+}
+
+.ant-select-dropdown {
+  background: #252526 !important;
+  border: 1px solid #3c3c3c !important;
+}
+
+.ant-select-item-option {
+  color: #ccc !important;
+}
+
+.ant-select-item-option-active {
+  background: #094771 !important;
+}
+
+.ant-select-item-option-selected {
+  background: #2d2d2d !important;
+  color: #fff !important;
+}
+
+/* Prevent default Vite styles interfering */
+#greet-input {
+  display: none;
+}
