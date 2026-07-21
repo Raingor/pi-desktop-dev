@@ -250,17 +250,26 @@ const ChatWindow: React.FC = () => {
                 {/* Role label */}
                 <div
                   style={{
-                    fontSize: 11,
-                    color: msg.role === 'user' ? '#777' : '#569cd6',
+                    fontSize: 12,
+                    color: msg.role === 'user' ? '#888' : '#569cd6',
                     marginBottom: 4,
                     marginLeft: msg.role === 'assistant' ? 4 : 0,
                     marginRight: msg.role === 'user' ? 4 : 0,
-                    fontWeight: 500,
-                    letterSpacing: '0.3px',
-                    textTransform: 'uppercase',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
                   }}
                 >
-                  {msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Pi' : msg.role}
+                  <span style={{
+                    fontSize: 10,
+                    padding: '1px 6px',
+                    borderRadius: 4,
+                    background: msg.role === 'user' ? '#3c3c3c' : 'rgba(86,156,214,0.12)',
+                    color: msg.role === 'user' ? '#aaa' : '#569cd6',
+                  }}>
+                    {msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Pi' : msg.role}
+                  </span>
                 </div>
 
                 {/* Message bubble */}

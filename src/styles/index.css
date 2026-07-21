@@ -78,6 +78,22 @@ body {
   margin: 16px 0;
 }
 
+.markdown-content blockquote {
+  border-left: 3px solid #569cd6;
+  padding: 4px 12px;
+  margin: 8px 0;
+  color: #888;
+  background: #252526;
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.markdown-content blockquote p {
+  margin-bottom: 4px;
+}
+
 /* Animations */
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }

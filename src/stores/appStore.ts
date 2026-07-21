@@ -2,36 +2,95 @@ import { create } from 'zustand';
 import type { ChatMessage, SessionEntry, AppSettings, PiEvent, ProviderModel } from '../types';
 import * as pi from '../services/piBridge';
 
+// ─── Pi session JSONL format parsers ───────────────────────
+
+/** Pi session entry structure: { type, id, parentId, timestamp, message?: { role, content: ContentItem[] } } */
+interface PiMessage {
+  role?: string;
+  content?: Array<Record<string, unknown>>;
+  errorMessage?: string;
+  [key: string]: unknown;
+}
+
 /** Infer message role from raw pi session entry */
 function inferRole(entry: Record<string, unknown>): ChatMessage['role'] {
-  if (entry.role === 'user' || entry.role === 'assistant' || entry.role === 'tool' || entry.role === 'system') {
-    return entry.role;
+  // Pi's format: entry.message.role
+  const msg = entry.message as PiMessage | undefined;
+  if (msg?.role) {
+    const r = msg.role;
+    if (r === 'user') return 'user';
+    if (r === 'assistant') return 'assistant';
+    if (r === 'toolResult' || r === 'tool') return 'tool';
+    if (r === 'system') return 'system';
   }
-  // Pi's session format may mark roles differently
+  // Fallback: check entry-level fields
   if (entry.type === 'user' || entry.from === 'user') return 'user';
-  if (entry.type === 'assistant' || entry.from === 'assistant') return 'assistant';
-  if (entry.type === 'tool' || entry.type === 'tool_call') return 'tool';
+  if (entry.type === 'assistant') return 'assistant';
+  if (entry.type === 'toolResult' || entry.type === 'tool') return 'tool';
   return 'assistant';
 }
 
-/** Extract text content from various entry formats */
+/** Extract displayable text from Pi's content array format */
 function extractContent(entry: Record<string, unknown>): string {
+  const parts: string[] = [];
+
+  // Pi format: entry.message.content is an array of ContentItem
+  const msg = entry.message as PiMessage | undefined;
+  const contentItems = msg?.content;
+
+  if (Array.isArray(contentItems) && contentItems.length > 0) {
+    for (const item of contentItems) {
+      const t = item.type;
+      if (t === 'text' && typeof item.text === 'string') {
+        parts.push(item.text);
+      } else if (t === 'thinking' && typeof item.thinking === 'string') {
+        // Truncate long thinking, show as a dimmed section
+        const maxThinkLen = 300;
+        const truncated = item.thinking.length > maxThinkLen
+          ? item.thinking.slice(0, maxThinkLen) + '…'
+          : item.thinking;
+        parts.push(`**💭 Thinking:**\n> ${truncated.replace(/\n/g, '\n> ')}`);
+      } else if (t === 'toolCall' && typeof item.name === 'string') {
+        const args = typeof item.arguments === 'string'
+          ? item.arguments
+          : typeof item.arguments === 'object'
+            ? JSON.stringify(item.arguments, null, 2)
+            : '';
+        parts.push(`\n\`\`\`tool:${item.name}\n${args}\n\`\`\``);
+      } else if (t === 'toolResult') {
+        // Tool results are handled as separate entries, skip here
+        continue;
+      }
+    }
+  }
+
+  if (parts.length > 0) return parts.join('\n\n');
+
+  // Fallback: check error message
+  if (typeof (entry.message as any)?.errorMessage === 'string') {
+    return `⚠️ Error: ${(entry.message as any).errorMessage}`;
+  }
+
+  // Fallback: check top-level text fields
   if (typeof entry.content === 'string') return entry.content;
   if (typeof entry.text === 'string') return entry.text;
   if (typeof entry.message === 'string') return entry.message;
-  // Nested content object
-  if (entry.content && typeof entry.content === 'object') {
-    const c = entry.content as Record<string, unknown>;
-    if (typeof c.text === 'string') return c.text;
-    if (typeof c.content === 'string') return c.content;
+
+  return '';
+}
+
+/** Normalize timestamp: handle both ISO strings and epoch numbers */
+function normalizeTimestamp(entry: Record<string, unknown>): string {
+  if (typeof entry.timestamp === 'string') return entry.timestamp;
+  if (typeof entry.timestamp === 'number') {
+    return new Date(entry.timestamp).toISOString();
   }
-  // assistantMessageEvent
-  if (entry.assistantMessageEvent && typeof entry.assistantMessageEvent === 'object') {
-    const e = entry.assistantMessageEvent as Record<string, unknown>;
-    if (typeof e.content === 'string') return e.content;
-    if (typeof e.text === 'string') return e.text;
+  // Check message.timestamp (epoch number)
+  const msg = entry.message as Record<string, unknown> | undefined;
+  if (msg && typeof msg.timestamp === 'number') {
+    return new Date(msg.timestamp).toISOString();
   }
-  return JSON.stringify(entry).slice(0, 500);
+  return new Date().toISOString();
 }
 
 interface AppState {
@@ -262,13 +321,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Helper to parse raw entries into ChatMessage format
     const toMessages = (entries: any[]): ChatMessage[] =>
       entries
-        .filter((e: Record<string, unknown>) => e.type !== 'session' && e.type !== 'response')
-        .map((m: Record<string, unknown>) => ({
-          id: (m.id as string) || crypto.randomUUID(),
-          role: inferRole(m),
-          content: extractContent(m),
-          timestamp: (m.timestamp as string) || new Date().toISOString(),
-        }));
+        .filter((e: Record<string, unknown>) => {
+          const t = e.type as string | undefined;
+          // Only include actual message entries, skip headers/responses/model_changes etc.
+          return t === 'message';
+        })
+        .map((m: Record<string, unknown>) => {
+          const content = extractContent(m);
+          // Skip entries with no displayable content
+          if (!content) return null;
+          return {
+            id: (m.id as string) || crypto.randomUUID(),
+            role: inferRole(m),
+            content,
+            timestamp: normalizeTimestamp(m),
+          } as ChatMessage;
+        })
+        .filter(Boolean) as ChatMessage[];
 
     try {
       // Try 1: RPC get_messages
