@@ -151,6 +151,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     trusted_cwds: [],
     last_session_path: undefined,
     telemetry_opt_in: false,
+    language: undefined,
   },
   settingsOpen: false,
   sidebarOpen: true,

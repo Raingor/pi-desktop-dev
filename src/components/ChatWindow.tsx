@@ -2,12 +2,14 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Button, Typography, Image, Tooltip, Select } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../stores/appStore';
 import { PlusIcon, SendIcon, StopIcon } from './icons';
 
 const { Text } = Typography;
 
 const ChatWindow: React.FC = () => {
+  const { t } = useTranslation();
   const {
     messages,
     isStreaming,
@@ -104,10 +106,10 @@ const ChatWindow: React.FC = () => {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 40, textAlign: 'center' }}>
         <div style={{ width: 80, height: 80, borderRadius: 24, background: 'linear-gradient(135deg, rgba(0,212,170,0.15), rgba(124,92,252,0.15))', border: '1px solid rgba(0,212,170,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20, fontSize: 36 }}>🤖</div>
-        <Text strong style={{ fontSize: 22, marginBottom: 8, color: 'var(--text-primary)' }}>Pi-Agent Not Found</Text>
-        <Text style={{ color: 'var(--text-muted)', marginBottom: 28, maxWidth: 400, fontSize: 14 }}>Install Pi coding agent to get started.</Text>
+        <Text strong style={{ fontSize: 22, marginBottom: 8, color: 'var(--text-primary)' }}>{t('chatWindow.piNotFound')}</Text>
+        <Text style={{ color: 'var(--text-muted)', marginBottom: 28, maxWidth: 400, fontSize: 14 }}>{t('chatWindow.installDesc')}</Text>
         <Button type="primary" size="large" onClick={() => window.open('https://pi.dev/docs/latest/quickstart', '_blank')}
-          style={{ background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f', fontWeight: 600, height: 42, padding: '0 28px', fontSize: 14, borderRadius: 10, boxShadow: '0 0 20px rgba(0,212,170,0.2)' }}>Install Pi Agent</Button>
+          style={{ background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f', fontWeight: 600, height: 42, padding: '0 28px', fontSize: 14, borderRadius: 10, boxShadow: '0 0 20px rgba(0,212,170,0.2)' }}>{t('chatWindow.installBtn')}</Button>
       </div>
     );
   }
@@ -117,7 +119,7 @@ const ChatWindow: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
         <div style={{ textAlign: 'center' }}>
           <div style={{ width: 32, height: 32, border: '2px solid var(--border-color)', borderTopColor: 'var(--accent-teal)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 12px' }} />
-          <Text style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading messages...</Text>
+          <Text style={{ color: 'var(--text-muted)', fontSize: 13 }}>{t('chatWindow.loadingMessages')}</Text>
         </div>
       </div>
     );
@@ -129,11 +131,11 @@ const ChatWindow: React.FC = () => {
       {/* Header bar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 16px', borderBottom: '1px solid var(--border-color)', flexShrink: 0, background: 'var(--bg-secondary)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Tooltip title="New Session">
+          <Tooltip title={t('chatWindow.newSession')}>
             <Button type="text" icon={<PlusIcon />} onClick={newSession} style={{ color: 'var(--text-muted)', width: 30, height: 30, padding: 0, borderRadius: 8 }} />
           </Tooltip>
           <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500, padding: '2px 10px', borderRadius: 4, background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
-            {messages.length > 0 ? `${messages.filter(m => m.role === 'user').length} prompts` : 'No messages'}
+            {messages.length > 0 ? t('common.prompts', { count: messages.filter(m => m.role === 'user').length }) : t('common.noMessages')}
           </span>
         </div>
       </div>
@@ -143,8 +145,8 @@ const ChatWindow: React.FC = () => {
         {messages.length === 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 40 }}>
             <div style={{ width: 64, height: 64, borderRadius: 20, background: 'linear-gradient(135deg, rgba(0,212,170,0.1), rgba(124,92,252,0.1))', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16, fontSize: 28 }}>💬</div>
-            <Text style={{ fontSize: 16, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 500 }}>Start a conversation</Text>
-            <Text style={{ fontSize: 13, color: 'var(--text-muted)' }}>Type a message to chat with Pi Agent</Text>
+            <Text style={{ fontSize: 16, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 500 }}>{t('chatWindow.startConversation')}</Text>
+            <Text style={{ fontSize: 13, color: 'var(--text-muted)' }}>{t('chatWindow.startDesc')}</Text>
           </div>
         ) : (
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 24px' }}>
@@ -152,7 +154,7 @@ const ChatWindow: React.FC = () => {
               <div key={msg.id} className={`message-bubble ${msg.role}`} style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
                 <div style={{ fontSize: 11, color: msg.role === 'user' ? 'var(--text-muted)' : 'var(--accent-teal)', marginBottom: 6, marginLeft: msg.role === 'assistant' ? 4 : 0, marginRight: msg.role === 'user' ? 4 : 0, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                   <span style={{ fontSize: 10, padding: '2px 10px', borderRadius: 4, background: msg.role === 'user' ? 'var(--bg-surface)' : 'var(--accent-teal-dim)', color: msg.role === 'user' ? 'var(--text-secondary)' : 'var(--accent-teal)', border: msg.role === 'user' ? '1px solid var(--border-color)' : '1px solid rgba(0,212,170,0.2)' }}>
-                    {msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Pi' : msg.role}
+                    {msg.role === 'user' ? t('chatWindow.you') : msg.role === 'assistant' ? t('chatWindow.pi') : msg.role}
                   </span>
                 </div>
                 <div style={{ maxWidth: '85%', padding: msg.role === 'user' ? '10px 16px' : '6px 6px', borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : 4, background: msg.role === 'user' ? 'linear-gradient(135deg, rgba(0,212,170,0.12), rgba(0,212,170,0.06))' : 'transparent', border: msg.role === 'user' ? '1px solid rgba(0,212,170,0.15)' : 'none', color: 'var(--text-primary)', lineHeight: 1.7, position: 'relative' }}>
@@ -224,10 +226,10 @@ const ChatWindow: React.FC = () => {
                 </>
               )}
               <input ref={inputRef as React.Ref<any>} value={inputValue} onChange={(e) => setInputValue(e.target.value)} onKeyDown={handleKeyDown}
-                placeholder={dragOver ? 'Drop images...' : 'Type a message to Pi...'} disabled={isStreaming || !piConnected}
+                placeholder={dragOver ? t('chatWindow.dropImages') : t('chatWindow.inputPlaceholder')} disabled={isStreaming || !piConnected}
                 style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text-primary)', fontSize: 14, padding: '12px 14px', fontFamily: 'inherit', resize: 'none' }} />
               {attachedImages.length > 0 && (
-                <span style={{ padding: '0 12px', color: 'var(--accent-teal)', fontSize: 11, fontWeight: 500 }}>{attachedImages.length} img</span>
+                <span style={{ padding: '0 12px', color: 'var(--accent-teal)', fontSize: 11, fontWeight: 500 }}>{t('chatWindow.imageCount', { count: attachedImages.length })}</span>
               )}
             </div>
 

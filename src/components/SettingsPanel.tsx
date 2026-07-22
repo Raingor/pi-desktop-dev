@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Typography,
   Switch,
@@ -19,6 +20,7 @@ import { useAppStore } from '../stores/appStore';
 const { Text, Title } = Typography;
 
 const SettingsPanel: React.FC = () => {
+  const { t } = useTranslation();
   const {
     settings,
     updateSettings,
@@ -72,10 +74,10 @@ const SettingsPanel: React.FC = () => {
       >
         <div>
           <Title level={4} style={{ margin: 0, color: 'var(--text-primary)', fontWeight: 600 }}>
-            Settings
+            {t('settingsPanel.title')}
           </Title>
           <Text style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
-            Configure your Pi Desktop experience
+            {t('settingsPanel.subtitle')}
           </Text>
         </div>
         <Button
@@ -87,21 +89,21 @@ const SettingsPanel: React.FC = () => {
       </div>
 
       {/* Appearance */}
-      <Section title="Appearance">
-        <SettingRow label="Theme">
+      <Section title={t('settingsPanel.appearance')}>
+        <SettingRow label={t('settingsPanel.theme')}>
           <Select
             value={settings.theme}
             onChange={(value) => updateSettings({ theme: value as 'light' | 'dark' | 'system' })}
             size="small"
             style={{ width: 140 }}
             options={[
-              { value: 'light', label: 'Light' },
-              { value: 'dark', label: 'Dark' },
-              { value: 'system', label: 'System' },
+              { value: 'light', label: t('settingsPanel.light') },
+              { value: 'dark', label: t('settingsPanel.dark') },
+              { value: 'system', label: t('settingsPanel.system') },
             ]}
           />
         </SettingRow>
-        <SettingRow label="Font Size">
+        <SettingRow label={t('settingsPanel.fontSize')}>
           <div style={{ width: 200 }}>
             <Slider
               min={12}
@@ -115,8 +117,28 @@ const SettingsPanel: React.FC = () => {
 
       <DividerLine />
 
+      {/* Language */}
+      <Section title={t('settingsPanel.language')}>
+        <SettingRow label={t('settingsPanel.language')}>
+          <Select
+            value={settings.language || 'en'}
+            onChange={(value) => updateSettings({ language: value })}
+            size="small"
+            style={{ width: 140 }}
+            options={[
+              { value: 'en', label: 'English' },
+              { value: 'zh-CN', label: '简体中文' },
+              { value: 'zh-TW', label: '繁體中文' },
+              { value: 'ja', label: '日本語' },
+            ]}
+          />
+        </SettingRow>
+      </Section>
+
+      <DividerLine />
+
       {/* Model / Provider */}
-      <Section title="Model & Provider"
+      <Section title={t('settingsPanel.modelProvider')}
         extra={
           <Button
             size="small"
@@ -125,24 +147,25 @@ const SettingsPanel: React.FC = () => {
             onClick={loadAvailableModels}
             style={{ color: 'var(--text-muted)', borderRadius: 6 }}
           >
-            <span style={{ fontSize: 11 }}>Refresh</span>
+            <span style={{ fontSize: 11 }}>{t('common.refresh')}</span>
           </Button>
         }
       >
         {availableModels.length === 0 ? (
           <Empty
-            description={<span style={{ color: 'var(--text-muted)' }}>No models available</span>}
+            description={<span style={{ color: 'var(--text-muted)' }}>{t('settingsPanel.noModels')}</span>}
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             style={{ margin: '16px 0' }}
           >
             <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-              Configure a provider in Pi first: run{' '}
-              <Tag style={{ borderColor: 'var(--border-color)', color: 'var(--accent-teal)' }}>pi /login &lt;provider&gt;</Tag> in your terminal
+              {t('settingsPanel.configureProvider')}{' '}
+              <Tag style={{ borderColor: 'var(--border-color)', color: 'var(--accent-teal)' }}>pi /login &lt;provider&gt;</Tag>{' '}
+              {t('settingsPanel.inTerminal')}
             </Text>
           </Empty>
         ) : (
           <>
-            <SettingRow label="Provider">
+            <SettingRow label={t('settingsPanel.provider')}>
               <Select
                 size="small"
                 value={currentProvider}
@@ -154,7 +177,7 @@ const SettingsPanel: React.FC = () => {
                 options={providerOptions}
               />
             </SettingRow>
-            <SettingRow label="Model">
+            <SettingRow label={t('settingsPanel.model')}>
               <Select
                 size="small"
                 value={currentModel?.modelId}
@@ -170,14 +193,14 @@ const SettingsPanel: React.FC = () => {
       <DividerLine />
 
       {/* Privacy */}
-      <Section title="Privacy">
+      <Section title={t('settingsPanel.privacy')}>
         <SettingRow
           label={
             <Space size={6}>
-              <span>Telemetry</span>
+              <span>{t('settingsPanel.telemetry')}</span>
               <InfoCircleOutlined
                 style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'help' }}
-                title="Anonymous usage data to improve the product"
+                title={t('settingsPanel.telemetryTooltip')}
               />
             </Space>
           }
@@ -192,14 +215,13 @@ const SettingsPanel: React.FC = () => {
       <DividerLine />
 
       {/* About */}
-      <Section title="About">
-        <AboutRow label="Pi Version" value={piVersion || 'Not found'} />
-        <AboutRow label="Binary Path" value={piBinaryPath || 'N/A'} mono />
-        <AboutRow label="App Version" value="0.1.0" />
+      <Section title={t('settingsPanel.about')}>
+        <AboutRow label={t('settingsPanel.piVersion')} value={piVersion || t('settingsPanel.notFound')} />
+        <AboutRow label={t('settingsPanel.binaryPath')} value={piBinaryPath || t('settingsPanel.na')} mono />
+        <AboutRow label={t('settingsPanel.appVersion')} value="0.1.0" />
         <div style={{ marginTop: 16 }}>
           <Text style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.6 }}>
-            Pi Desktop is a GUI client for the Pi-Agent coding agent.
-            It communicates with the local Pi process via stdin/stdout JSONL.
+            {t('settingsPanel.aboutDesc')}
           </Text>
         </div>
       </Section>

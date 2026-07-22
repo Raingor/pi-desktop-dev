@@ -64,6 +64,10 @@ impl AppDatabase {
             "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('telemetry_opt_in', 'false')",
             [],
         ).ok();
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('language', 'en')",
+            [],
+        ).ok();
 
         Ok(())
     }
@@ -109,6 +113,9 @@ impl AppDatabase {
         }
         if let Some(last_session) = self.get_setting("last_session_path") {
             settings.last_session_path = Some(last_session);
+        }
+        if let Some(lang) = self.get_setting("language") {
+            settings.language = Some(lang);
         }
 
         settings

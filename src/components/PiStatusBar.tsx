@@ -1,8 +1,10 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../stores/appStore';
 import { PiStatusIndicator } from './icons';
 
 const PiStatusBar: React.FC = () => {
+  const { t } = useTranslation();
   const {
     piConnected,
     piMissing,
@@ -41,7 +43,7 @@ const PiStatusBar: React.FC = () => {
             fontWeight: 500,
             fontSize: 11,
           }}>
-            {piOnline ? `Pi ${piVersion || ''}` : 'Pi Offline'}
+            {piOnline ? t('statusBar.piVersion', { version: piVersion || '' }) : t('statusBar.piOffline')}
           </span>
         </div>
 
@@ -64,10 +66,10 @@ const PiStatusBar: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, opacity: 0.7, fontSize: 11 }}>
         {currentSessionId && (
           <span>
-            {messages.length} message{messages.length !== 1 ? 's' : ''}
+            {t('common.messages', { count: messages.length })}
           </span>
         )}
-        <span>v0.1.0</span>
+        <span>{t('statusBar.appVersion')}</span>
       </div>
     </div>
   );

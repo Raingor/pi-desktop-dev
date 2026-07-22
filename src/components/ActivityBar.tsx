@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Tooltip } from 'antd';
+import { useTranslation } from 'react-i18next';
 import {
   ChatBubbleIcon,
   HistoryIcon,
@@ -10,6 +11,7 @@ import { useAppStore } from '../stores/appStore';
 import { BarChartOutlined, DatabaseOutlined } from '@ant-design/icons';
 
 const ActivityBar: React.FC = () => {
+  const { t } = useTranslation();
   const {
     piConnected,
     piMissing,
@@ -88,7 +90,7 @@ const ActivityBar: React.FC = () => {
         borderRight: '1px solid var(--border-color)',
       }}
     >
-      <Tooltip title={piOnline ? 'Pi Online' : 'Pi Offline'} placement="right">
+      <Tooltip title={piOnline ? t('activityBar.piOnline') : t('activityBar.piOffline')} placement="right">
         <div
           style={{
             width: 36,
@@ -124,14 +126,14 @@ const ActivityBar: React.FC = () => {
 
       <div style={{ width: 24, height: 1, background: 'var(--border-color)', marginBottom: 12 }} />
 
-      {navBtn('chat', <ChatBubbleIcon size={18} color={activeView === 'chat' ? 'var(--accent-teal)' : 'var(--text-muted)'} />, 'Chat')}
-      {navBtn('dashboard', <BarChartOutlined style={{ fontSize: 16, color: activeView === 'dashboard' ? 'var(--accent-teal)' : 'var(--text-muted)' }} />, 'Dashboard')}
-      {navBtn('sessions', <HistoryIcon size={18} color={activeView === 'sessions' ? 'var(--accent-teal)' : 'var(--text-muted)'} />, 'Sessions')}
-      {navBtn('memory', <DatabaseOutlined style={{ fontSize: 16, color: activeView === 'memory' ? 'var(--accent-teal)' : 'var(--text-muted)' }} />, 'Memory')}
+      {navBtn('chat', <ChatBubbleIcon size={18} color={activeView === 'chat' ? 'var(--accent-teal)' : 'var(--text-muted)'} />, t('activityBar.chat'))}
+      {navBtn('dashboard', <BarChartOutlined style={{ fontSize: 16, color: activeView === 'dashboard' ? 'var(--accent-teal)' : 'var(--text-muted)' }} />, t('activityBar.dashboard'))}
+      {navBtn('sessions', <HistoryIcon size={18} color={activeView === 'sessions' ? 'var(--accent-teal)' : 'var(--text-muted)'} />, t('activityBar.sessions'))}
+      {navBtn('memory', <DatabaseOutlined style={{ fontSize: 16, color: activeView === 'memory' ? 'var(--accent-teal)' : 'var(--text-muted)' }} />, t('activityBar.memory'))}
 
       <div style={{ flex: 1 }} />
 
-      {navBtn('settings', <SettingsIcon size={18} color={activeView === 'settings' ? 'var(--accent-teal)' : 'var(--text-muted)'} />, 'Settings')}
+      {navBtn('settings', <SettingsIcon size={18} color={activeView === 'settings' ? 'var(--accent-teal)' : 'var(--text-muted)'} />, t('activityBar.settings'))}
     </div>
   );
 };

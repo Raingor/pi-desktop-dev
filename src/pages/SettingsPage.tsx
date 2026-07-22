@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Typography, Button, Input, Select, Tag, Space, Modal, message } from 'antd';
+import { useTranslation } from 'react-i18next';
 import { DownloadOutlined, UploadOutlined, DeleteOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { usePiConfigStore } from '../stores/piConfigStore';
 import { useAppStore } from '../stores/appStore';
@@ -8,6 +9,7 @@ import type { PiConfig } from '../types';
 const { Text, Title } = Typography;
 
 const SettingsPage: React.FC = () => {
+  const { t } = useTranslation();
   const { settings: piSettings, allProviders, allModels, initialized, init, updateSettings, setProviderAuth, removeProviderAuth, importConfig, resetToDefaults } = usePiConfigStore();
   const { settings: appSettings, updateSettings: updateAppSettings } = useAppStore();
   const [newPackage, setNewPackage] = useState('');
@@ -70,7 +72,7 @@ const SettingsPage: React.FC = () => {
   if (!piSettings) {
     return (
       <div style={{ padding: 24, height: '100%', overflow: 'auto' }}>
-        <Text style={{ color: 'var(--text-muted)' }}>Loading...</Text>
+        <Text style={{ color: 'var(--text-muted)' }}>{t('common.loading')}</Text>
       </div>
     );
   }
@@ -78,25 +80,25 @@ const SettingsPage: React.FC = () => {
   return (
     <div style={{ padding: 24, height: '100%', overflow: 'auto' }}>
       <Title level={4} style={{ color: 'var(--text-primary)', marginBottom: 24 }}>
-        <SettingOutlined style={{ marginRight: 8 }} />Pi Configuration
+        <SettingOutlined style={{ marginRight: 8 }} />{t('settingsPage.title')}
       </Title>
 
       {/* Appearance - Theme Switcher */}
-      <Section title="Appearance">
-        <SettingRow label="Theme">
+      <Section title={t('settingsPage.appearance')}>
+        <SettingRow label={t('settingsPage.theme')}>
           <Select
             value={appSettings.theme}
             onChange={(value) => updateAppSettings({ theme: value as 'light' | 'dark' | 'system' })}
             size="small"
             style={{ width: 140 }}
             options={[
-              { value: 'light', label: '☀️ Light' },
-              { value: 'dark', label: '🌙 Dark' },
-              { value: 'system', label: '💻 System' },
+              { value: 'light', label: t('settingsPage.light') },
+              { value: 'dark', label: t('settingsPage.dark') },
+              { value: 'system', label: t('settingsPage.system') },
             ]}
           />
         </SettingRow>
-        <SettingRow label="Font Size">
+        <SettingRow label={t('settingsPage.fontSize')}>
           <div style={{ width: 200 }}>
             <Input
               type="number"
@@ -116,20 +118,20 @@ const SettingsPage: React.FC = () => {
 
       <DividerLine />
 
-      <Section title="Defaults">
-        <SettingRow label="Default Provider">
+      <Section title={t('settingsPage.defaults')}>
+        <SettingRow label={t('settingsPage.defaultProvider')}>
           <Select size="small" value={piSettings.defaultProvider} onChange={(v) => updateSettings({ defaultProvider: v })}
-            style={{ width: 200 }} options={providerOptions} placeholder="Select provider" allowClear />
+            style={{ width: 200 }} options={providerOptions} placeholder={t('settingsPage.selectProvider')} allowClear />
         </SettingRow>
-        <SettingRow label="Default Model">
+        <SettingRow label={t('settingsPage.defaultModel')}>
           <Select size="small" value={piSettings.defaultModel} onChange={(v) => updateSettings({ defaultModel: v })}
-            style={{ width: 200 }} options={modelOptions} placeholder="Select model" allowClear />
+            style={{ width: 200 }} options={modelOptions} placeholder={t('settingsPage.selectModel')} allowClear />
         </SettingRow>
       </Section>
 
       <DividerLine />
 
-      <Section title="Enabled Models">
+      <Section title={t('settingsPage.enabledModels')}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {allModels.map((m) => (
             <Tag key={`${m.providerId}/${m.id}`}
@@ -154,16 +156,16 @@ const SettingsPage: React.FC = () => {
 
       <DividerLine />
 
-      <Section title="API Keys">
+      <Section title={t('settingsPage.apiKeys')}>
         {allProviders.filter((p) => p.hasAuth).map((p) => (
           <SettingRow key={p.id} label={p.name}>
             <Space size={8}>
-              <Input.Password size="small" placeholder="Enter API key..." value={apiKeys[p.id] ?? ''}
+              <Input.Password size="small" placeholder={t('settingsPage.enterApiKey')} value={apiKeys[p.id] ?? ''}
                 onChange={(e) => setApiKeys({ ...apiKeys, [p.id]: e.target.value })}
                 style={{ width: 200 }} />
-              <Button size="small" type="primary" onClick={() => { setProviderAuth(p.id, apiKeys[p.id]); message.success('Key saved'); }}
-                style={{ background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f' }}>Save</Button>
-              <Button size="small" danger onClick={() => { removeProviderAuth(p.id); setApiKeys({ ...apiKeys, [p.id]: '' }); }}>Clear</Button>
+              <Button size="small" type="primary" onClick={() => { setProviderAuth(p.id, apiKeys[p.id]); message.success(t('settingsPage.keySaved')); }}
+                style={{ background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f' }}>{t('common.save')}</Button>
+              <Button size="small" danger onClick={() => { removeProviderAuth(p.id); setApiKeys({ ...apiKeys, [p.id]: '' }); }}>{t('common.clear')}</Button>
             </Space>
           </SettingRow>
         ))}
@@ -171,7 +173,7 @@ const SettingsPage: React.FC = () => {
 
       <DividerLine />
 
-      <Section title="Packages">
+      <Section title={t('settingsPage.packages')}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
           {(piSettings.packages ?? []).map((pkg) => (
             <Tag key={pkg} closable onClose={() => updateSettings({ packages: (piSettings.packages ?? []).filter((p) => p !== pkg) })}
@@ -182,27 +184,27 @@ const SettingsPage: React.FC = () => {
         </div>
         <Space size={8}>
           <Input size="small" value={newPackage} onChange={(e) => setNewPackage(e.target.value)}
-            placeholder="e.g. npm:pi-web-switch" style={{ width: 240 }}
+            placeholder={t('settingsPage.packagePlaceholder')} style={{ width: 240 }}
             onPressEnter={addPackage} />
           <Button size="small" icon={<PlusOutlined />} onClick={addPackage}
-            style={{ color: 'var(--text-muted)', borderRadius: 6 }}>Add</Button>
+            style={{ color: 'var(--text-muted)', borderRadius: 6 }}>{t('common.add')}</Button>
         </Space>
       </Section>
 
       <DividerLine />
 
-      <Section title="Import / Export">
+      <Section title={t('settingsPage.importExport')}>
         <Space size={12}>
-          <Button icon={<DownloadOutlined />} onClick={handleExport} style={{ color: 'var(--text-muted)', borderRadius: 8 }}>Export Config</Button>
-          <Button icon={<UploadOutlined />} onClick={handleImport} style={{ color: 'var(--text-muted)', borderRadius: 8 }}>Import Config</Button>
+          <Button icon={<DownloadOutlined />} onClick={handleExport} style={{ color: 'var(--text-muted)', borderRadius: 8 }}>{t('settingsPage.exportConfig')}</Button>
+          <Button icon={<UploadOutlined />} onClick={handleImport} style={{ color: 'var(--text-muted)', borderRadius: 8 }}>{t('settingsPage.importConfig')}</Button>
           <Button danger icon={<DeleteOutlined />} onClick={() => setShowReset(true)}
-            style={{ borderRadius: 8 }}>Factory Reset</Button>
+            style={{ borderRadius: 8 }}>{t('settingsPage.factoryReset')}</Button>
         </Space>
       </Section>
 
-      <Modal title="Reset to defaults?" open={showReset} onOk={handleReset} onCancel={() => setShowReset(false)}
-        okText="Reset" cancelText="Cancel" okButtonProps={{ danger: true }}>
-        <Text style={{ color: 'var(--text-secondary)' }}>This will clear all Pi configuration (settings, auth, custom models). This action cannot be undone.</Text>
+      <Modal title={t('settingsPage.resetTitle')} open={showReset} onOk={handleReset} onCancel={() => setShowReset(false)}
+        okText={t('common.reset')} cancelText={t('common.cancel')} okButtonProps={{ danger: true }}>
+        <Text style={{ color: 'var(--text-secondary)' }}>{t('settingsPage.resetDesc')}</Text>
       </Modal>
     </div>
   );

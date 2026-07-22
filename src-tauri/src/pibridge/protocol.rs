@@ -93,6 +93,7 @@ pub struct AppSettings {
     pub trusted_cwds: Vec<String>,
     pub last_session_path: Option<String>,
     pub telemetry_opt_in: bool,
+    pub language: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -104,6 +105,7 @@ impl Default for AppSettings {
             trusted_cwds: vec![],
             last_session_path: None,
             telemetry_opt_in: false,
+            language: None,
         }
     }
 }

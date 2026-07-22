@@ -801,6 +801,7 @@ fn parse_epoch_ms(ts: &str) -> Result<i64, ()> {
 #[derive(Debug, Serialize, Clone)]
 pub struct TrashEntry {
     pub originalPath: String,
+    pub trashPath: String,
     pub fileName: String,
     pub trashedAt: String,
     pub sessionId: String,
@@ -899,6 +900,7 @@ fn parse_trash_entry(trash_path: &Path) -> Option<TrashEntry> {
 
     Some(TrashEntry {
         originalPath: original_path.to_string_lossy().to_string(),
+        trashPath: trash_path.to_string_lossy().to_string(),
         fileName: file_name,
         trashedAt: trashed_at,
         sessionId: id,

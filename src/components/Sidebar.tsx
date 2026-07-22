@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Typography, Button, Space, Empty, Badge, Collapse, Dropdown, message, MenuProps } from 'antd';
+import { useTranslation } from 'react-i18next';
 import {
   MessageOutlined,
   ReloadOutlined,
@@ -41,12 +42,13 @@ interface GroupedSessions {
 }
 
 const Sidebar: React.FC = () => {
+  const { t } = useTranslation();
   const { sessions, newSession, loadSessions, switchSession, currentSessionId } = useAppStore();
 
   const handleTrash = async (path: string) => {
     try {
       await piDeleteSession(path);
-      message.success('Moved to trash');
+      message.success(t('sidebar.movedToTrash'));
       loadSessions();
     } catch (e) {
       console.error(e);
@@ -88,19 +90,19 @@ const Sidebar: React.FC = () => {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ padding: '14px 14px 12px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Text style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
-          Sessions
+          {t('sidebar.sessions')}
         </Text>
         <Space size={2}>
           <Button size="small" type="text" icon={<PlusOutlined style={{ fontSize: 13, color: 'var(--text-muted)' }} />}
-            onClick={newSession} title="New Chat" style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
+            onClick={newSession} title={t('sidebar.newChat')} style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
           <Button size="small" type="text" icon={<ReloadOutlined style={{ fontSize: 13, color: 'var(--text-muted)' }} />}
-            onClick={loadSessions} title="Refresh" style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
+            onClick={loadSessions} title={t('common.refresh')} style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
         </Space>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
         {groups.length === 0 ? (
-          <Empty description={<span style={{ color: 'var(--text-muted)', fontSize: 12 }}>No sessions</span>}
+          <Empty description={<span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t('sidebar.noSessions')}</span>}
             style={{ padding: 32, marginTop: 16 }} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
           <Collapse ghost expandIconPosition="end" defaultActiveKey={defaultActiveKey}
@@ -119,7 +121,7 @@ const Sidebar: React.FC = () => {
                     <Badge count={group.sessions.length}
                       style={{ fontSize: 9, height: 15, minWidth: 15, lineHeight: '15px', padding: '0 5px', backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)', fontWeight: 400, boxShadow: 'none', border: '1px solid var(--border-color)', borderRadius: 4 }}
                       showZero={false} />
-                    <Text style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{formatDate(group.latestTimestamp)}</Text>
+                    <Text style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{formatDateRelative(group.latestTimestamp, t)}</Text>
                   </div>
                 </div>
               ),
@@ -130,7 +132,7 @@ const Sidebar: React.FC = () => {
                     const menuItems: MenuProps['items'] = [{
                       key: 'trash',
                       icon: <DeleteOutlined style={{ fontSize: 12, color: 'var(--accent-danger)' }} />,
-                      label: 'Move to Trash',
+                      label: t('sidebar.moveToTrash'),
                       danger: true,
                       onClick: (e) => {
                         e.domEvent.stopPropagation();
@@ -158,7 +160,7 @@ const Sidebar: React.FC = () => {
                   })}
                   {group.sessions.length > 20 && (
                     <div style={{ padding: '6px 12px 6px 28px' }}>
-                      <Text style={{ color: 'var(--text-muted)', fontSize: 11 }}>+{group.sessions.length - 20} more</Text>
+                      <Text style={{ color: 'var(--text-muted)', fontSize: 11 }}>{t('common.more', { count: group.sessions.length - 20 })}</Text>
                     </div>
                   )}
                 </div>
@@ -171,14 +173,14 @@ const Sidebar: React.FC = () => {
   );
 };
 
-function formatDate(ts: string): string {
+function formatDateRelative(ts: string, t: (key: string, opts?: any) => string): string {
   if (!ts) return '';
   const d = new Date(ts);
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const diffDays = Math.floor(diffMs / 86400000);
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yest';
+  if (diffDays === 0) return t('common.today');
+  if (diffDays === 1) return t('common.yest');
   if (diffDays < 7) return `${diffDays}d`;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }

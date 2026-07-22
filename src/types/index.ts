@@ -51,6 +51,7 @@ export interface AppSettings {
   trusted_cwds: string[];
   last_session_path?: string;
   telemetry_opt_in: boolean;
+  language?: string;
 }
 
 export interface WindowGeometry {
@@ -202,6 +203,7 @@ export interface ProjectGroup {
 
 export interface TrashEntry {
   originalPath: string;
+  trashPath: string;
   fileName: string;
   trashedAt: string;
   sessionId: string;

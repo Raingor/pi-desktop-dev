@@ -4,6 +4,8 @@ import { useAppStore } from './stores/appStore';
 import { usePiConfigStore } from './stores/piConfigStore';
 import { onPiEvent, onBinaryMissing } from './services/piBridge';
 import AppLayout from './components/AppLayout';
+import './i18n';
+import i18n from './i18n';
 
 const App: React.FC = () => {
   const { settings, initialize, handlePiEvent } = useAppStore();
@@ -58,6 +60,14 @@ const App: React.FC = () => {
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, [settings.theme]);
+
+  // Sync language to i18n
+  useEffect(() => {
+    if (settings.language) {
+      i18n.changeLanguage(settings.language);
+      localStorage.setItem('pi-desktop-lang', settings.language);
+    }
+  }, [settings.language]);
 
   // Determine the Ant Design theme algorithm
   const getAlgorithm = () => {

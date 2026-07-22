@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Typography, Segmented, Table, Tabs, Card, Statistic, Row, Col, Button, Tooltip } from 'antd';
+import { useTranslation } from 'react-i18next';
 import { ReloadOutlined, DollarOutlined } from '@ant-design/icons';
 import { AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { usePiConfigStore } from '../stores/piConfigStore';
@@ -24,6 +25,7 @@ function fmtDate(dateStr: string): string {
 }
 
 const DashboardPage: React.FC = () => {
+  const { t } = useTranslation();
   const { usage, refreshUsage, initialized } = usePiConfigStore();
   const [range, setRange] = useState<RangeKey>('today');
   const [currency, setCurrency] = useState<'USD' | 'CNY'>('USD');
@@ -54,64 +56,64 @@ const DashboardPage: React.FC = () => {
   }));
 
   const requestLogColumns = [
-    { title: 'Time', dataIndex: 'timestamp', key: 'time', render: (t: string) => <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t}</span> },
-    { title: 'Provider', dataIndex: 'providerId', key: 'provider', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
-    { title: 'Model', dataIndex: 'modelId', key: 'model', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
-    { title: 'Input', dataIndex: 'input', key: 'input', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Output', dataIndex: 'output', key: 'output', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Cost', dataIndex: 'cost', key: 'cost', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-purple)' }}>{currency === 'CNY' ? formatCostShortCNY(v) : formatCostShort(v)}</span> },
-    { title: 'Req', dataIndex: 'requests', key: 'requests', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{v}</span> },
+    { title: t('dashboard.time'), dataIndex: 'timestamp', key: 'time', render: (t: string) => <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t}</span> },
+    { title: t('dashboard.provider'), dataIndex: 'providerId', key: 'provider', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
+    { title: t('dashboard.model'), dataIndex: 'modelId', key: 'model', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
+    { title: t('dashboard.input'), dataIndex: 'input', key: 'input', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.output'), dataIndex: 'output', key: 'output', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.cost'), dataIndex: 'cost', key: 'cost', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-purple)' }}>{currency === 'CNY' ? formatCostShortCNY(v) : formatCostShort(v)}</span> },
+    { title: t('dashboard.req'), dataIndex: 'requests', key: 'requests', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{v}</span> },
   ];
 
   const providerColumns = [
-    { title: 'Provider', dataIndex: 'providerId', key: 'provider', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
-    { title: 'Tokens', dataIndex: 'totalTokens', key: 'tokens', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Input', dataIndex: 'totalInput', key: 'input', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Output', dataIndex: 'totalOutput', key: 'output', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Cost', dataIndex: 'totalCost', key: 'cost', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-purple)' }}>{currency === 'CNY' ? formatCostShortCNY(v) : formatCostShort(v)}</span> },
-    { title: 'Requests', dataIndex: 'totalRequests', key: 'requests', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{v}</span> },
-    { title: 'Models', dataIndex: 'modelCount', key: 'models', render: (v: number) => <span style={{ color: 'var(--text-secondary)' }}>{v}</span> },
+    { title: t('dashboard.provider'), dataIndex: 'providerId', key: 'provider', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
+    { title: t('dashboard.tokens'), dataIndex: 'totalTokens', key: 'tokens', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.input'), dataIndex: 'totalInput', key: 'input', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.output'), dataIndex: 'totalOutput', key: 'output', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.cost'), dataIndex: 'totalCost', key: 'cost', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-purple)' }}>{currency === 'CNY' ? formatCostShortCNY(v) : formatCostShort(v)}</span> },
+    { title: t('dashboard.requests_'), dataIndex: 'totalRequests', key: 'requests', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{v}</span> },
+    { title: t('dashboard.models'), dataIndex: 'modelCount', key: 'models', render: (v: number) => <span style={{ color: 'var(--text-secondary)' }}>{v}</span> },
   ];
 
   const modelColumns = [
-    { title: 'Model', dataIndex: 'modelId', key: 'model', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
-    { title: 'Provider', dataIndex: 'providerId', key: 'provider', render: (t: string) => <span style={{ color: 'var(--text-secondary)' }}>{t}</span> },
-    { title: 'Tokens', dataIndex: 'totalTokens', key: 'tokens', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Input', dataIndex: 'totalInput', key: 'input', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Output', dataIndex: 'totalOutput', key: 'output', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
-    { title: 'Cost', dataIndex: 'totalCost', key: 'cost', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-purple)' }}>{currency === 'CNY' ? formatCostShortCNY(v) : formatCostShort(v)}</span> },
-    { title: 'Requests', dataIndex: 'totalRequests', key: 'requests', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{v}</span> },
+    { title: t('dashboard.model'), dataIndex: 'modelId', key: 'model', render: (t: string) => <span style={{ color: 'var(--text-primary)' }}>{t}</span> },
+    { title: t('dashboard.provider'), dataIndex: 'providerId', key: 'provider', render: (t: string) => <span style={{ color: 'var(--text-secondary)' }}>{t}</span> },
+    { title: t('dashboard.tokens'), dataIndex: 'totalTokens', key: 'tokens', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.input'), dataIndex: 'totalInput', key: 'input', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.output'), dataIndex: 'totalOutput', key: 'output', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{formatTokensShort(v)}</span> },
+    { title: t('dashboard.cost'), dataIndex: 'totalCost', key: 'cost', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-purple)' }}>{currency === 'CNY' ? formatCostShortCNY(v) : formatCostShort(v)}</span> },
+    { title: t('dashboard.requests_'), dataIndex: 'totalRequests', key: 'requests', render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{v}</span> },
   ];
 
   const tabItems = [
-    { key: 'log', label: 'Request Log', children: <Table dataSource={usage?.requestLog ?? []} columns={requestLogColumns} rowKey={(_, i) => String(i)} pagination={{ pageSize: 20, size: 'small' }} size="small" style={{ marginTop: 8 }} /> },
-    { key: 'provider', label: 'Provider Stats', children: <Table dataSource={usage?.providerStats ?? []} columns={providerColumns} rowKey={(_, i) => String(i)} pagination={false} size="small" style={{ marginTop: 8 }} /> },
-    { key: 'model', label: 'Model Stats', children: <Table dataSource={usage?.modelStats ?? []} columns={modelColumns} rowKey={(_, i) => String(i)} pagination={false} size="small" style={{ marginTop: 8 }} /> },
+    { key: 'log', label: t('dashboard.requestLog'), children: <Table dataSource={usage?.requestLog ?? []} columns={requestLogColumns} rowKey={(_, i) => String(i)} pagination={{ pageSize: 20, size: 'small' }} size="small" style={{ marginTop: 8 }} /> },
+    { key: 'provider', label: t('dashboard.providerStats'), children: <Table dataSource={usage?.providerStats ?? []} columns={providerColumns} rowKey={(_, i) => String(i)} pagination={false} size="small" style={{ marginTop: 8 }} /> },
+    { key: 'model', label: t('dashboard.modelStats'), children: <Table dataSource={usage?.modelStats ?? []} columns={modelColumns} rowKey={(_, i) => String(i)} pagination={false} size="small" style={{ marginTop: 8 }} /> },
   ];
 
   return (
     <div style={{ padding: 24, height: '100%', overflow: 'auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <Text style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>Dashboard</Text>
+          <Text style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{t('dashboard.title')}</Text>
           <Text style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>
-            {usage ? `${formatNumber(usage.totalRequests)} requests` : ''}
+            {usage ? t('dashboard.requests', { count: formatNumber(usage.totalRequests) }) : ''}
           </Text>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Button size="small" type="text" onClick={() => setCurrency(currency === 'USD' ? 'CNY' : 'USD')} style={{ color: 'var(--text-muted)' }}>
             <DollarOutlined /> {currency}
           </Button>
-          <Tooltip title="Refresh">
+          <Tooltip title={t('common.refresh')}>
             <Button size="small" type="text" icon={<ReloadOutlined />} onClick={fetchData} style={{ color: 'var(--text-muted)' }} />
           </Tooltip>
           <Segmented
             value={range}
             onChange={(v) => setRange(v as RangeKey)}
             options={[
-              { value: 'today', label: 'Today' },
-              { value: '7d', label: '7 Days' },
-              { value: '30d', label: '30 Days' },
+              { value: 'today', label: t('dashboard.today') },
+              { value: '7d', label: t('dashboard.sevenDays') },
+              { value: '30d', label: t('dashboard.thirtyDays') },
             ]}
             size="small"
           />
@@ -121,27 +123,27 @@ const DashboardPage: React.FC = () => {
       <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
         <Col span={6}>
           <Card size="small" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
-            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total Tokens</Text>}
+            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('dashboard.totalTokens')}</Text>}
               value={usage?.totalTokens ?? 0} valueStyle={{ fontSize: 20, color: 'var(--text-primary)' }}
               suffix={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>≈ {formatTokens(usage?.totalTokens ?? 0)}</Text>} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
-            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>Requests</Text>}
+            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('dashboard.requests_')}</Text>}
               value={usage?.totalRequests ?? 0} valueStyle={{ fontSize: 20, color: 'var(--text-primary)' }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
-            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total Cost</Text>}
+            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('dashboard.totalCost')}</Text>}
               value={usage?.totalCost ?? 0} valueStyle={{ fontSize: 20, color: 'var(--accent-purple)' }}
               precision={4} prefix={currency === 'CNY' ? '¥' : '$'} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
-            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>Cache Hit Rate</Text>}
+            <Statistic title={<Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('dashboard.cacheHitRate')}</Text>}
               value={usage?.cacheHitRate ?? 0} valueStyle={{ fontSize: 20, color: 'var(--accent-teal)' }}
               suffix="%" />
           </Card>
@@ -149,17 +151,17 @@ const DashboardPage: React.FC = () => {
       </Row>
 
       <Card size="small" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)', marginBottom: 20 }}>
-        <Text style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: 12 }}>Usage Trend</Text>
+        <Text style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: 12 }}>{t('dashboard.usageTrend')}</Text>
         <ResponsiveContainer width="100%" height={280}>
           <AreaChart data={areaData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" />
             <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} axisLine={false} tickLine={false} />
             <RechartsTooltip contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-color)', borderRadius: 8, color: 'var(--text-primary)', fontSize: 12 }} />
-            <Area type="monotone" dataKey="input" stroke="#00d4aa" fill="none" strokeWidth={2} dot={false} name="Input" />
-            <Area type="monotone" dataKey="output" stroke="#7c5cfc" fill="none" strokeWidth={2} dot={false} name="Output" />
-            <Area type="monotone" dataKey="cacheRead" stroke="#3b82f6" fill="none" strokeWidth={2} strokeDasharray="4 2" dot={false} name="Cache Hit" />
-            <Area type="monotone" dataKey="cacheWrite" stroke="#f59e0b" fill="none" strokeWidth={2} strokeDasharray="2 2" dot={false} name="Cache Create" />
+            <Area type="monotone" dataKey="input" stroke="#00d4aa" fill="none" strokeWidth={2} dot={false} name={t('dashboard.input')} />
+            <Area type="monotone" dataKey="output" stroke="#7c5cfc" fill="none" strokeWidth={2} dot={false} name={t('dashboard.output')} />
+            <Area type="monotone" dataKey="cacheRead" stroke="#3b82f6" fill="none" strokeWidth={2} strokeDasharray="4 2" dot={false} name={t('dashboard.cacheHit')} />
+            <Area type="monotone" dataKey="cacheWrite" stroke="#f59e0b" fill="none" strokeWidth={2} strokeDasharray="2 2" dot={false} name={t('dashboard.cacheCreate')} />
             <Legend wrapperStyle={{ fontSize: 11, color: 'var(--text-muted)', paddingTop: 8 }} />
           </AreaChart>
         </ResponsiveContainer>

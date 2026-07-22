@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Typography, Collapse, Empty, Spin } from 'antd';
+import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { piReadMemoryFiles } from '../services/piConfigService';
@@ -8,6 +9,7 @@ import type { MemoryFile } from '../types';
 const { Text } = Typography;
 
 const MemoryPage: React.FC = () => {
+  const { t } = useTranslation();
   const [files, setFiles] = useState<MemoryFile[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -29,10 +31,10 @@ const MemoryPage: React.FC = () => {
   return (
     <div style={{ padding: 24, height: '100%', overflow: 'auto' }}>
       <Text style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: 20 }}>
-        Memory
+        {t('memory.title')}
       </Text>
       {files.length === 0 ? (
-        <Empty description={<span style={{ color: 'var(--text-muted)' }}>No memory files found</span>} />
+        <Empty description={<span style={{ color: 'var(--text-muted)' }}>{t('memory.noFiles')}</span>} />
       ) : (
         <Collapse
           ghost
@@ -57,7 +59,7 @@ const MemoryPage: React.FC = () => {
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{file.content}</ReactMarkdown>
                   </div>
                 ) : (
-                  <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>Empty file</Text>
+                  <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t('memory.emptyFile')}</Text>
                 )}
               </div>
             ),
