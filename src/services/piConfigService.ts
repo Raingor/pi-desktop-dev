@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   PiSettings, PiAuth, PiModelsJson, UsageRangeData,
   MemoryFile, ProjectGroup, UsageRecord, TrashEntry,
+  ExternalSession,
 } from '../types';
 
 export async function piReadSettings(): Promise<PiSettings> { return invoke('pi_read_settings'); }
@@ -23,3 +24,17 @@ export async function piListTrash(): Promise<TrashEntry[]> { return invoke('pi_l
 export async function piRestoreFromTrash(trashPath: string): Promise<boolean> { return invoke('pi_restore_from_trash', { trashPath }); }
 export async function piPermanentlyDelete(trashPath: string): Promise<boolean> { return invoke('pi_permanently_delete', { trashPath }); }
 export async function piAutoCleanup(): Promise<{ trashed: number; purged: number }> { return invoke('pi_auto_cleanup'); }
+
+// ─── Rename session ────────────────────────────────────────────
+export async function piRenameSession(path: string, newName: string): Promise<void> {
+  return invoke('pi_rename_session', { path, newName });
+}
+
+// ─── Import from other agent tools (opencode / claude code) ────
+export async function piListExternalSessions(): Promise<ExternalSession[]> {
+  return invoke('pi_list_external_sessions');
+}
+
+export async function piImportExternalSession(filePath: string, source: string): Promise<string> {
+  return invoke('pi_import_external_session', { filePath, source });
+}

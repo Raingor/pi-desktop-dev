@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { Typography, Button, Space, Empty, Badge, Collapse, Dropdown, message, MenuProps } from 'antd';
+import React, { useMemo, useState } from 'react';
+import { Typography, Button, Space, Empty, Badge, Collapse, Dropdown, message, MenuProps, Modal, Input, Tooltip } from 'antd';
 import { useTranslation } from 'react-i18next';
 import {
   MessageOutlined,
@@ -7,6 +7,9 @@ import {
   PlusOutlined,
   FolderOutlined,
   DeleteOutlined,
+  EditOutlined,
+  MenuFoldOutlined,
+  ImportOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '../stores/appStore';
 import { piDeleteSession } from '../services/piConfigService';
@@ -43,7 +46,21 @@ interface GroupedSessions {
 
 const Sidebar: React.FC = () => {
   const { t } = useTranslation();
-  const { sessions, newSession, loadSessions, switchSession, currentSessionId } = useAppStore();
+  const {
+    sessions,
+    newSession,
+    loadSessions,
+    switchSession,
+    currentSessionId,
+    renameSession,
+    setSidebarCollapsed,
+    setActiveView,
+    loadExternalSessions,
+  } = useAppStore();
+
+  const [renameTarget, setRenameTarget] = useState<SessionEntry | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
 
   const handleTrash = async (path: string) => {
     try {
@@ -53,6 +70,35 @@ const Sidebar: React.FC = () => {
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const openRename = (session: SessionEntry) => {
+    setRenameTarget(session);
+    setRenameValue(session.sessionName || '');
+    setRenaming(false);
+  };
+
+  const submitRename = async () => {
+    if (!renameTarget) return;
+    if (!renameValue.trim()) {
+      message.error(t('sidebar.nameRequired'));
+      return;
+    }
+    setRenaming(true);
+    try {
+      await renameSession(renameTarget.path, renameValue.trim());
+      message.success(t('sidebar.renamed'));
+      setRenameTarget(null);
+    } catch (e) {
+      message.error(t('sidebar.renameFailed'));
+    } finally {
+      setRenaming(false);
+    }
+  };
+
+  const openImportWizard = () => {
+    loadExternalSessions();
+    setActiveView('sessions');
   };
 
   const groups = useMemo(() => {
@@ -93,10 +139,18 @@ const Sidebar: React.FC = () => {
           {t('sidebar.sessions')}
         </Text>
         <Space size={2}>
+          <Tooltip title={t('sidebar.importExternal')}>
+            <Button size="small" type="text" icon={<ImportOutlined style={{ fontSize: 13, color: 'var(--text-muted)' }} />}
+              onClick={openImportWizard} style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
+          </Tooltip>
           <Button size="small" type="text" icon={<PlusOutlined style={{ fontSize: 13, color: 'var(--text-muted)' }} />}
             onClick={newSession} title={t('sidebar.newChat')} style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
           <Button size="small" type="text" icon={<ReloadOutlined style={{ fontSize: 13, color: 'var(--text-muted)' }} />}
             onClick={loadSessions} title={t('common.refresh')} style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
+          <Tooltip title={t('sidebar.collapse')}>
+            <Button size="small" type="text" icon={<MenuFoldOutlined style={{ fontSize: 13, color: 'var(--text-muted)' }} />}
+              onClick={() => setSidebarCollapsed(true)} style={{ color: 'var(--text-muted)', borderRadius: 6 }} />
+          </Tooltip>
         </Space>
       </div>
 
@@ -129,16 +183,28 @@ const Sidebar: React.FC = () => {
                 <div style={{ marginLeft: -8, marginRight: -12 }}>
                   {group.sessions.slice(0, 20).map((session) => {
                     const isActive = currentSessionId === session.path;
-                    const menuItems: MenuProps['items'] = [{
-                      key: 'trash',
-                      icon: <DeleteOutlined style={{ fontSize: 12, color: 'var(--accent-danger)' }} />,
-                      label: t('sidebar.moveToTrash'),
-                      danger: true,
-                      onClick: (e) => {
-                        e.domEvent.stopPropagation();
-                        handleTrash(session.path);
+                    const menuItems: MenuProps['items'] = [
+                      {
+                        key: 'rename',
+                        icon: <EditOutlined style={{ fontSize: 12 }} />,
+                        label: t('sidebar.rename'),
+                        onClick: (e) => {
+                          e.domEvent.stopPropagation();
+                          openRename(session);
+                        },
                       },
-                    }];
+                      { type: 'divider' as const },
+                      {
+                        key: 'trash',
+                        icon: <DeleteOutlined style={{ fontSize: 12, color: 'var(--accent-danger)' }} />,
+                        label: t('sidebar.moveToTrash'),
+                        danger: true,
+                        onClick: (e) => {
+                          e.domEvent.stopPropagation();
+                          handleTrash(session.path);
+                        },
+                      },
+                    ];
                     return (
                       <Dropdown key={session.path} menu={{ items: menuItems }} trigger={['contextMenu']}>
                         <div onClick={() => switchSession(session.path)}
@@ -169,6 +235,29 @@ const Sidebar: React.FC = () => {
           />
         )}
       </div>
+
+      {/* Rename modal */}
+      <Modal
+        title={t('sidebar.renameTitle')}
+        open={!!renameTarget}
+        onOk={submitRename}
+        onCancel={() => setRenameTarget(null)}
+        confirmLoading={renaming}
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
+        destroyOnClose
+        okButtonProps={{ style: { background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f' } }}
+      >
+        <Input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onPressEnter={submitRename}
+          placeholder={t('sidebar.renamePlaceholder')}
+          maxLength={80}
+          showCount
+        />
+      </Modal>
     </div>
   );
 };

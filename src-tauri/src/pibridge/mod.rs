@@ -188,12 +188,74 @@ impl PiBridge {
                 }
 
                 log::info!("Stdout reader thread exited");
-                // Process died — notify frontend
+                // Process died — notify frontend. Actual restart is orchestrated by lib.rs
+                // which has access to the binary_path and can spawn a fresh reader thread.
                 let _ = handle.emit("pi:event", serde_json::json!({
                     "type": "process_died",
                     "reason": "stdout pipe closed"
                 }));
             })
             .expect("Failed to spawn stdout reader thread")
+    }
+
+    /// Restart pi process: kill, respawn with stored binary path, take stdout,
+    /// and start a fresh reader thread. Returns Ok(()) on success.
+    /// Emits `process_restarted` event on success, or `process_died` on failure.
+    pub fn restart_with_recovery(&mut self, handle: AppHandle) -> Result<(), String> {
+        if self.binary_path.is_empty() {
+            return Err("Cannot restart: binary_path is empty".to_string());
+        }
+
+        log::info!("Restarting pi process (crash recovery)…");
+        let bp = self.binary_path.clone();
+
+        // Kill old process and spawn a new one
+        {
+            let mut process = self.process.lock().map_err(|e| e.to_string())?;
+            process.restart(&bp)?;
+        }
+
+        // Take stdout and start a fresh reader thread
+        let stdout = {
+            let mut process = self.process.lock().map_err(|e| e.to_string())?;
+            process.take_stdout()
+        };
+
+        if let Some(stdout) = stdout {
+            let stop_signal = {
+                let process = self.process.lock().map_err(|e| e.to_string())?;
+                process.stop_signal()
+            };
+            let pending = self.pending_responses();
+            self.start_stdout_reader(stdout, handle.clone(), stop_signal, pending);
+            log::info!("Pi process restarted and stdout reader started");
+        } else {
+            return Err("Failed to take stdout after restart".to_string());
+        }
+
+        // Emit restart success event
+        let _ = handle.emit("pi:event", serde_json::json!({
+            "type": "process_restarted",
+            "binaryPath": bp,
+            "piVersion": self.pi_version,
+        }));
+
+        Ok(())
+    }
+
+    /// Track the last session file path (called on switch_session success).
+    pub fn set_last_session_file(&self, path: Option<String>) {
+        if let Ok(process) = self.process.lock() {
+            process.set_last_session_file(path);
+        }
+    }
+
+    /// Get the last session file path (for crash recovery).
+    pub fn last_session_file(&self) -> Option<String> {
+        if let Ok(process) = self.process.lock() {
+            process.last_session_file()
+        } else {
+            None
+        }
     }
 }

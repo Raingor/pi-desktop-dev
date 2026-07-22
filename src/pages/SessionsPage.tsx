@@ -1,11 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { Typography, Collapse, Input, Empty, Popconfirm, Tag, Button, Space, Tooltip, Tabs, message, Checkbox } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { DeleteOutlined, SearchOutlined, FolderOutlined, MessageOutlined, RestOutlined, UndoOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import { DeleteOutlined, SearchOutlined, FolderOutlined, MessageOutlined, RestOutlined, UndoOutlined, ExclamationCircleOutlined, ImportOutlined, ReloadOutlined } from '@ant-design/icons';
 import { piListSessionsDetailed, piDeleteSession, piListTrash, piRestoreFromTrash, piPermanentlyDelete, piAutoCleanup } from '../services/piConfigService';
-import type { ProjectGroup, DetailedSessionEntry, TrashEntry } from '../types';
+import { useAppStore } from '../stores/appStore';
+import type { ProjectGroup, DetailedSessionEntry, TrashEntry, ExternalSession } from '../types';
 
 const { Text } = Typography;
+
+const TOOL_COLORS: Record<string, string> = {
+  opencode: 'var(--accent-teal)',
+  claude_code: 'var(--accent-purple)',
+  generic: 'var(--text-muted)',
+};
 
 function formatDate(ts: string, t: (key: string, opts?: any) => string): string {
   if (!ts) return '';
@@ -36,6 +43,11 @@ const SessionsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState('sessions');
   const [selectedTrash, setSelectedTrash] = useState<Set<string>>(new Set());
 
+  // External-agent import wizard state.
+  const { externalSessions, loadExternalSessions, importExternalSession } = useAppStore();
+  const [importing, setImporting] = useState<string | null>(null);
+  const [importSearch, setImportSearch] = useState('');
+
   const loadSessions = async () => {
     try {
       await piAutoCleanup().catch(() => {});
@@ -54,7 +66,29 @@ const SessionsPage: React.FC = () => {
   useEffect(() => {
     loadSessions();
     loadTrash();
-  }, []);
+    loadExternalSessions();
+  }, [loadExternalSessions]);
+
+  const handleImportExternal = async (session: ExternalSession) => {
+    setImporting(session.filePath);
+    try {
+      await importExternalSession(session.filePath, session.tool);
+      message.success(t('sessions.importSuccess'));
+      loadSessions();
+    } catch (e) {
+      message.error(t('sessions.importFailed'));
+      console.error(e);
+    } finally {
+      setImporting(null);
+    }
+  };
+
+  const filteredExternal = externalSessions.filter((s) =>
+    !importSearch ||
+    s.project.toLowerCase().includes(importSearch.toLowerCase()) ||
+    s.preview.toLowerCase().includes(importSearch.toLowerCase()) ||
+    s.tool.toLowerCase().includes(importSearch.toLowerCase())
+  );
 
   const handleDelete = async (path: string) => {
     try {
@@ -228,11 +262,94 @@ const SessionsPage: React.FC = () => {
         </>
       ),
     },
+    {
+      key: 'import',
+      label: <span><ImportOutlined style={{ marginRight: 4 }} />{t('sessions.import')} {externalSessions.length > 0 && <Tag style={{ fontSize: 10, marginLeft: 4, background: 'var(--accent-purple-dim)', color: 'var(--accent-purple)', borderColor: 'rgba(124,92,252,0.3)' }}>{externalSessions.length}</Tag>}</span>,
+      children: (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div>
+              <Text style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{t('sessions.importExternal')}</Text>
+              <Text style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{t('sessions.importDesc')}</Text>
+            </div>
+            <Space size={8}>
+              <Input.Search placeholder={t('sessions.searchImport')} value={importSearch}
+                onChange={(e) => setImportSearch(e.target.value)} style={{ width: 220 }} size="small"
+                prefix={<SearchOutlined style={{ color: 'var(--text-muted)' }} />} />
+              <Tooltip title={t('common.refresh')}>
+                <Button size="small" icon={<ReloadOutlined />} onClick={() => loadExternalSessions()} style={{ color: 'var(--text-muted)' }} />
+              </Tooltip>
+            </Space>
+          </div>
+
+          {/* Tool filter badges */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            {['opencode', 'claude_code'].map((tool) => {
+              const count = externalSessions.filter((s) => s.tool === tool).length;
+              return (
+                <Tag key={tool} style={{ fontSize: 11, padding: '2px 10px', borderRadius: 12, background: 'var(--bg-surface)', color: TOOL_COLORS[tool] || 'var(--text-muted)', border: `1px solid ${TOOL_COLORS[tool] || 'var(--border-color)'}40` }}>
+                  {tool === 'claude_code' ? 'Claude Code' : 'OpenCode'} · {count}
+                </Tag>
+              );
+            })}
+          </div>
+
+          {filteredExternal.length === 0 ? (
+            <Empty description={<span style={{ color: 'var(--text-muted)' }}>{t('sessions.noExternalSessions')}</span>} />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {filteredExternal.map((session) => (
+                <ExternalSessionRow
+                  key={session.filePath}
+                  session={session}
+                  importing={importing === session.filePath}
+                  onImport={() => handleImportExternal(session)}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      ),
+    },
   ];
 
   return (
     <div style={{ padding: 24, height: '100%', overflow: 'auto' }}>
       <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} size="small" />
+    </div>
+  );
+};
+
+const ExternalSessionRow: React.FC<{ session: ExternalSession; importing: boolean; onImport: () => void }> = ({ session, importing, onImport }) => {
+  const { t } = useTranslation();
+  const color = TOOL_COLORS[session.tool] || TOOL_COLORS.generic;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', transition: 'all 0.15s' }}>
+      <Tag style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: color + '18', color, border: `1px solid ${color}40`, flexShrink: 0, textTransform: 'capitalize' }}>
+        {session.tool === 'claude_code' ? 'Claude' : session.tool === 'opencode' ? 'OpenCode' : session.tool}
+      </Tag>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Text style={{ fontSize: 12, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', fontWeight: 500 }} title={session.project}>
+          {session.project || t('sessions.untitledProject')}
+        </Text>
+        <Text style={{ fontSize: 10, color: 'var(--text-muted)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+          {session.preview || '—'}
+        </Text>
+        <Space size={6} style={{ marginTop: 2 }}>
+          {session.timestamp && <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>{new Date(session.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</Text>}
+          <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>{session.sessionId.slice(0, 8)}</Text>
+        </Space>
+      </div>
+      <Button
+        size="small"
+        type="primary"
+        loading={importing}
+        icon={<ImportOutlined />}
+        onClick={onImport}
+        style={{ flexShrink: 0, background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f', borderRadius: 6 }}
+      >
+        {t('sessions.importBtn')}
+      </Button>
     </div>
   );
 };

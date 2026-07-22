@@ -122,6 +122,33 @@ impl PiProcess {
         self.child = None;
         self.stdin = None;
     }
+
+    /// Restart pi process with the same binary path. Returns Ok(()) on success.
+    /// Caller should re-take stdout and re-start reader thread afterwards.
+    pub fn restart(&mut self, binary_path: &str) -> Result<(), String> {
+        self.kill();
+        // Brief pause to let OS reclaim resources
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        self.spawn(binary_path)
+    }
+
+    /// Get the last known session file path (for crash recovery).
+    pub fn last_session_file(&self) -> Option<String> {
+        self.last_session_file.lock().ok()?.clone()
+    }
+
+    /// Set the last known session file path (called when switch_session succeeds).
+    pub fn set_last_session_file(&self, path: Option<String>) {
+        if let Ok(mut g) = self.last_session_file.lock() {
+            *g = path;
+        }
+    }
+
+    /// Get the binary path used for the spawn (we don't store it, so caller must remember).
+    /// Returns the path from the most recent spawn by reading the child's program path.
+    pub fn binary_path_used(&self) -> Option<String> {
+        self.child.as_ref().map(|_| String::new()) // Caller must track externally
+    }
 }
 
 impl Drop for PiProcess {

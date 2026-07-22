@@ -24,6 +24,10 @@ interface PiConfigState {
   removeProviderAuth: (providerId: string) => Promise<void>;
   addCustomProvider: (id: string, cfg: CustomProviderConfig) => Promise<void>;
   removeCustomProvider: (id: string) => Promise<void>;
+  updateCustomProvider: (id: string, cfg: Partial<CustomProviderConfig>) => Promise<void>;
+  addCustomModel: (providerId: string, model: Model) => Promise<void>;
+  updateCustomModel: (providerId: string, modelId: string, patch: Partial<Model>) => Promise<void>;
+  removeCustomModel: (providerId: string, modelId: string) => Promise<void>;
   importConfig: (config: { settings: PiSettings; auth: PiAuth; modelsJson: PiModelsJson | null }) => Promise<void>;
   resetToDefaults: () => Promise<void>;
 }
@@ -166,6 +170,92 @@ export const usePiConfigStore = create<PiConfigState>((set, get) => ({
       set({ allProviders: newAllProviders, allModels: newAllModels });
     } catch (e) {
       console.error('Failed to remove custom provider:', e);
+    }
+  },
+
+  updateCustomProvider: async (id, patch) => {
+    const { modelsJson } = get();
+    if (!modelsJson || !modelsJson.providers[id]) return;
+    const existing = modelsJson.providers[id];
+    const updatedCfg: CustomProviderConfig = {
+      ...existing,
+      ...patch,
+      // Merge models array if provided
+      models: patch.models ?? existing.models,
+    };
+    const updated = { providers: { ...modelsJson.providers, [id]: updatedCfg } };
+    try {
+      await pi.piWriteModels(updated);
+      set({ modelsJson: updated });
+      const { auth } = get();
+      set({ allProviders: mergeProviders(auth, updated) });
+    } catch (e) {
+      console.error('Failed to update custom provider:', e);
+    }
+  },
+
+  addCustomModel: async (providerId, model) => {
+    const { modelsJson } = get();
+    if (!modelsJson || !modelsJson.providers[providerId]) return;
+    const existing = modelsJson.providers[providerId];
+    const models = [...(existing.models ?? []), model] as Model[];
+    const updatedCfg: CustomProviderConfig = { ...existing, models };
+    const updated = { providers: { ...modelsJson.providers, [providerId]: updatedCfg } };
+    try {
+      await pi.piWriteModels(updated);
+      set({ modelsJson: updated });
+      const { auth } = get();
+      const newAllProviders = mergeProviders(auth, updated);
+      const newAllModels = newAllProviders.flatMap((p) =>
+        p.models.map((m) => ({ ...m, providerId: p.id, providerName: p.name }))
+      );
+      set({ allProviders: newAllProviders, allModels: newAllModels });
+    } catch (e) {
+      console.error('Failed to add custom model:', e);
+    }
+  },
+
+  updateCustomModel: async (providerId, modelId, patch) => {
+    const { modelsJson } = get();
+    if (!modelsJson || !modelsJson.providers[providerId]) return;
+    const existing = modelsJson.providers[providerId];
+    const models = (existing.models ?? []).map((m: any) =>
+      m.id === modelId ? { ...m, ...patch } : m
+    );
+    const updatedCfg: CustomProviderConfig = { ...existing, models };
+    const updated = { providers: { ...modelsJson.providers, [providerId]: updatedCfg } };
+    try {
+      await pi.piWriteModels(updated);
+      set({ modelsJson: updated });
+      const { auth } = get();
+      const newAllProviders = mergeProviders(auth, updated);
+      const newAllModels = newAllProviders.flatMap((p) =>
+        p.models.map((m) => ({ ...m, providerId: p.id, providerName: p.name }))
+      );
+      set({ allProviders: newAllProviders, allModels: newAllModels });
+    } catch (e) {
+      console.error('Failed to update custom model:', e);
+    }
+  },
+
+  removeCustomModel: async (providerId, modelId) => {
+    const { modelsJson } = get();
+    if (!modelsJson || !modelsJson.providers[providerId]) return;
+    const existing = modelsJson.providers[providerId];
+    const models = (existing.models ?? []).filter((m: any) => m.id !== modelId);
+    const updatedCfg: CustomProviderConfig = { ...existing, models };
+    const updated = { providers: { ...modelsJson.providers, [providerId]: updatedCfg } };
+    try {
+      await pi.piWriteModels(updated);
+      set({ modelsJson: updated });
+      const { auth } = get();
+      const newAllProviders = mergeProviders(auth, updated);
+      const newAllModels = newAllProviders.flatMap((p) =>
+        p.models.map((m) => ({ ...m, providerId: p.id, providerName: p.name }))
+      );
+      set({ allProviders: newAllProviders, allModels: newAllModels });
+    } catch (e) {
+      console.error('Failed to remove custom model:', e);
     }
   },
 

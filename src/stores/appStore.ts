@@ -1,6 +1,8 @@
 import { create } from 'zustand';
-import type { ChatMessage, SessionEntry, AppSettings, PiEvent, ProviderModel } from '../types';
+import type { ChatMessage, SessionEntry, AppSettings, PiEvent, ProviderModel, ContextUsage, ThinkingLevel, ExternalSession } from '../types';
 import * as pi from '../services/piBridge';
+import * as piCfg from '../services/piConfigService';
+import { optimizeInput as optimizeInputUtil } from '../utils/optimizeInput';
 
 // ─── Pi session JSONL format parsers ───────────────────────
 
@@ -81,6 +83,28 @@ function normalizeTimestamp(entry: Record<string, unknown>): string {
   return new Date().toISOString();
 }
 
+export type InputMode = 'prompt' | 'steer' | 'follow_up';
+
+export interface RetryInfo {
+  visible: boolean;
+  attempt: number;
+  maxAttempts?: number;
+  reason?: string;
+}
+
+export interface QueueState {
+  active: number;
+  pending: number;
+  total: number;
+}
+
+export interface CompactionInfo {
+  visible: boolean;
+  phase: 'started' | 'progress' | 'completed' | 'failed';
+  progress?: number;
+  message?: string;
+}
+
 interface AppState {
   bootstrapped: boolean;
   piVersion: string;
@@ -100,24 +124,66 @@ interface AppState {
   sidebarOpen: boolean;
   activeView: string;
 
+  // M3: stream/queue state
+  inputMode: InputMode;
+  retryInfo: RetryInfo | null;
+  queueState: QueueState | null;
+  compactionInfo: CompactionInfo | null;
+  agentPhase: 'idle' | 'thinking' | 'acting' | 'observing';
+  unreadCount: number;
+
+  // M3: crash recovery
+  crashRecovery: { visible: boolean; reason: string; restartAttempt: number } | null;
+
+  // Context usage / thinking level
+  contextUsage: ContextUsage | null;
+  thinkingLevel: ThinkingLevel;
+  sidebarCollapsed: boolean;
+
   initialize: () => Promise<void>;
   sendMessage: (content: string, images?: string[]) => Promise<void>;
+  sendSteer: (content: string, images?: string[]) => Promise<void>;
+  sendFollowUp: (content: string, images?: string[]) => Promise<void>;
   abortStream: () => Promise<void>;
   newSession: () => Promise<void>;
   loadSessions: () => Promise<void>;
   switchSession: (path: string) => Promise<void>;
+  renameSession: (path: string, newName: string) => Promise<void>;
   loadSettings: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
   toggleSettings: () => void;
   toggleSidebar: () => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
   setInputValue: (value: string) => void;
+  setInputMode: (mode: InputMode) => void;
   handlePiEvent: (event: PiEvent) => void;
   appendMessage: (msg: Partial<ChatMessage>) => void;
   updateLastMessage: (content: string) => void;
   loadMessages: () => Promise<void>;
   loadAvailableModels: () => Promise<void>;
   setModel: (provider: string, modelId: string) => Promise<void>;
+  setThinkingLevel: (level: ThinkingLevel) => Promise<void>;
+  refreshContextUsage: () => Promise<void>;
   setActiveView: (view: string) => void;
+  dismissRetry: () => void;
+  dismissCompaction: () => void;
+  dismissCrashRecovery: () => void;
+  triggerCompaction: () => Promise<void>;
+  markAllRead: () => void;
+  optimizeInput: (text: string, mode: 'structure' | 'concise' | 'detailed' | 'fix') => string;
+
+  // External agent sessions (opencode / claude code)
+  externalSessions: ExternalSession[];
+  loadExternalSessions: () => Promise<void>;
+  importExternalSession: (filePath: string, source: string) => Promise<string>;
+
+  // M8: export/import
+  exportHtml: (outPath?: string) => Promise<string>;
+  exportMarkdown: (outPath?: string) => Promise<string>;
+  exportJson: (outPath?: string) => Promise<string>;
+  importJsonl: (filePath: string) => Promise<void>;
+  exportCurrentMessagesHtml: () => string;
+  exportCurrentMessagesMarkdown: () => string;
 }
 
 function extractDelta(event: PiEvent): string | null {
@@ -157,6 +223,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarOpen: true,
   activeView: 'chat',
 
+  // M3: stream/queue state
+  inputMode: 'prompt' as InputMode,
+  retryInfo: null,
+  queueState: null,
+  compactionInfo: null,
+  agentPhase: 'idle' as const,
+  unreadCount: 0,
+  crashRecovery: null,
+
+  // Context usage / thinking level
+  contextUsage: null,
+  thinkingLevel: 'medium' as ThinkingLevel,
+  sidebarCollapsed: false,
+  externalSessions: [],
+
   // ─── Actions ─────────────────────────────────────────────────
 
   initialize: async () => {
@@ -183,15 +264,25 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   sendMessage: async (content: string, images?: string[]) => {
     if (!content.trim() || get().isStreaming) return;
+    const mode = get().inputMode;
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: content.trim(),
       timestamp: new Date().toISOString(),
+      metadata: mode !== 'prompt' ? { mode } : undefined,
     };
-    set((state) => ({ messages: [...state.messages, userMsg], inputValue: '', isStreaming: true }));
+    set((state) => ({ messages: [...state.messages, userMsg], inputValue: '', isStreaming: true, retryInfo: null, compactionInfo: null }));
     try {
-      await pi.piPrompt(content, images);
+      if (mode === 'steer') {
+        await pi.piSteer(content, images);
+      } else if (mode === 'follow_up') {
+        await pi.piFollowUp(content, images);
+      } else {
+        await pi.piPrompt(content, images);
+      }
+      // Reset back to prompt mode after sending a steer/follow_up
+      if (mode !== 'prompt') set({ inputMode: 'prompt' });
     } catch (e) {
       console.error('Failed to send prompt:', e);
       set((state) => {
@@ -200,6 +291,42 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (last && last.role === 'assistant') { last.content = `Error: ${e}`; last.isStreaming = false; }
         return { messages: msgs, isStreaming: false };
       });
+    }
+  },
+
+  sendSteer: async (content: string, images?: string[]) => {
+    if (!content.trim() || get().isStreaming) return;
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: content.trim(),
+      timestamp: new Date().toISOString(),
+      metadata: { mode: 'steer' },
+    };
+    set((state) => ({ messages: [...state.messages, userMsg], inputValue: '', isStreaming: true }));
+    try {
+      await pi.piSteer(content, images);
+    } catch (e) {
+      console.error('Failed to send steer:', e);
+      set({ isStreaming: false });
+    }
+  },
+
+  sendFollowUp: async (content: string, images?: string[]) => {
+    if (!content.trim() || get().isStreaming) return;
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: content.trim(),
+      timestamp: new Date().toISOString(),
+      metadata: { mode: 'follow_up' },
+    };
+    set((state) => ({ messages: [...state.messages, userMsg], inputValue: '', isStreaming: true }));
+    try {
+      await pi.piFollowUp(content, images);
+    } catch (e) {
+      console.error('Failed to send follow_up:', e);
+      set({ isStreaming: false });
     }
   },
 
@@ -355,38 +482,209 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   toggleSidebar: () => { set((state) => ({ sidebarOpen: !state.sidebarOpen })); },
 
+  setSidebarCollapsed: (collapsed: boolean) => { set({ sidebarCollapsed: collapsed }); },
+
   setInputValue: (value: string) => { set({ inputValue: value }); },
+
+  setInputMode: (mode: InputMode) => { set({ inputMode: mode }); },
+
+  renameSession: async (path: string, newName: string) => {
+    try {
+      await piCfg.piRenameSession(path, newName);
+      // Update local session list in-place
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.path === path ? { ...s, sessionName: newName } : s
+        ),
+      }));
+    } catch (e) {
+      console.error('Failed to rename session:', e);
+      throw e;
+    }
+  },
+
+  setThinkingLevel: async (level: ThinkingLevel) => {
+    set({ thinkingLevel: level });
+    try {
+      await pi.piSetThinkingLevel(level);
+    } catch (e) {
+      console.warn('Failed to set thinking level via RPC (non-critical):', e);
+    }
+  },
+
+  refreshContextUsage: async () => {
+    try {
+      const usage = await pi.piGetContextUsage();
+      set({ contextUsage: usage });
+    } catch (e) {
+      console.warn('Failed to refresh context usage:', e);
+    }
+  },
+
+  loadExternalSessions: async () => {
+    try {
+      const sessions = await piCfg.piListExternalSessions();
+      set({ externalSessions: sessions });
+    } catch (e) {
+      console.warn('Failed to load external sessions:', e);
+      set({ externalSessions: [] });
+    }
+  },
+
+  importExternalSession: async (filePath: string, source: string) => {
+    const destPath = await piCfg.piImportExternalSession(filePath, source);
+    get().loadSessions();
+    return destPath;
+  },
+
+  optimizeInput: (text: string, mode: 'structure' | 'concise' | 'detailed' | 'fix') => {
+    return optimizeInputUtil(text, mode);
+  },
+
+  dismissRetry: () => { set({ retryInfo: null }); },
+  dismissCompaction: () => { set({ compactionInfo: null }); },
+  dismissCrashRecovery: () => { set({ crashRecovery: null }); },
+
+  markAllRead: () => { set({ unreadCount: 0 }); },
+
+  triggerCompaction: async () => {
+    set({ compactionInfo: { visible: true, phase: 'started', message: 'Compacting context…' } });
+    try {
+      await pi.piCompact();
+    } catch (e) {
+      console.error('Compaction failed:', e);
+      set({ compactionInfo: { visible: true, phase: 'failed', message: `Compaction failed: ${e}` } });
+      setTimeout(() => set({ compactionInfo: null }), 4000);
+    }
+  },
 
   handlePiEvent: (event: PiEvent) => {
     const delta = extractDelta(event);
+    const e = event as Record<string, unknown>;
     switch (event.type) {
       case 'bootstrap':
-        set({ piConnected: true, piMissing: false, piVersion: (event as Record<string, string>).piVersion || '' });
+        set({ piConnected: true, piMissing: false, piVersion: e.piVersion as string || '', crashRecovery: null });
         get().loadAvailableModels();
-        // Get current model from pi state
         pi.piGetState().then((state: any) => {
           if (state?.model?.provider && state?.model?.modelId) {
             set({ currentModel: { provider: state.model.provider, modelId: state.model.modelId } });
           }
         }).catch(() => {});
         break;
-      case 'binary_missing': case 'process_died': set({ piMissing: true, piConnected: false, isStreaming: false }); break;
-      case 'agent_start': set({ isStreaming: true }); break;
-      case 'agent_end': set({ isStreaming: false }); get().loadSessions(); break;
-      case 'turn_start': set({ isStreaming: true }); break;
-      case 'turn_end': set({ isStreaming: false }); break;
-      case 'message_start':
-        const startPayload = event as Record<string, unknown>;
-        const msgId = (startPayload.message as Record<string, unknown>)?.id as string || crypto.randomUUID();
-        set((state) => ({ messages: [...state.messages, { id: msgId, role: 'assistant', content: '', timestamp: new Date().toISOString(), isStreaming: true }], isStreaming: true }));
+      case 'binary_missing':
+        set({ piMissing: true, piConnected: false, isStreaming: false });
         break;
-      case 'message_update': case 'text_delta': if (delta) get().updateLastMessage(delta); break;
+      case 'process_died': {
+        const reason = (e.reason as string) || (e.error as string) || 'Pi process exited unexpectedly';
+        const restartAttempt = (e.restart_attempt as number) || 0;
+        set({ piConnected: false, isStreaming: false, crashRecovery: { visible: true, reason, restartAttempt } });
+        break;
+      }
+      case 'process_restarted':
+        set({ piConnected: true, piMissing: false, crashRecovery: null, isStreaming: false });
+        // Restore last session if any
+        if (get().currentSessionId) {
+          get().loadMessages().catch(() => {});
+        }
+        break;
+      case 'agent_start':
+        set({ isStreaming: true, agentPhase: 'thinking', retryInfo: null });
+        break;
+      case 'agent_end':
+        set({ isStreaming: false, agentPhase: 'idle', queueState: null });
+        get().loadSessions();
+        break;
+      case 'turn_start':
+        set({ isStreaming: true, agentPhase: 'acting' });
+        break;
+      case 'turn_end':
+        set({ isStreaming: false, agentPhase: 'idle' });
+        break;
+      case 'tool_call_start': case 'tool_call':
+        set({ agentPhase: 'acting' });
+        break;
+      case 'tool_result': case 'tool_call_end':
+        set({ agentPhase: 'observing' });
+        break;
+      case 'message_start': {
+        const msgId = (e.message as Record<string, unknown>)?.id as string || crypto.randomUUID();
+        set((state) => ({
+          messages: [...state.messages, { id: msgId, role: 'assistant', content: '', timestamp: new Date().toISOString(), isStreaming: true }],
+          isStreaming: true,
+          agentPhase: 'thinking',
+        }));
+        break;
+      }
+      case 'message_update': case 'text_delta':
+        if (delta) {
+          get().updateLastMessage(delta);
+          set({ agentPhase: 'thinking' });
+        }
+        break;
       case 'message_end':
-        set({ isStreaming: false });
-        set((state) => { const msgs = [...state.messages]; const last = msgs[msgs.length - 1]; if (last && last.isStreaming) last.isStreaming = false; return { messages: msgs }; });
+        set((state) => {
+          const msgs = [...state.messages];
+          const last = msgs[msgs.length - 1];
+          if (last && last.isStreaming) last.isStreaming = false;
+          return { messages: msgs, isStreaming: false, agentPhase: 'idle' };
+        });
+        // Increment unread if window not focused (best-effort, frontend can reset)
+        set((s) => ({ unreadCount: s.unreadCount + 1 }));
         break;
-      case 'session': set({ currentSessionId: (event as Record<string, string>).id || null }); break;
-      case 'error': console.error('Pi error event:', (event as Record<string, unknown>).error); break;
+      case 'session':
+        set({ currentSessionId: (e.id as string) || null });
+        break;
+      case 'error':
+        console.error('Pi error event:', e.error);
+        break;
+      // M3: retry / queue / compaction events
+      case 'auto_retry_started': case 'auto_retry': {
+        const attempt = (e.attempt as number) || (e.retryCount as number) || 1;
+        const max = (e.maxAttempts as number) || (e.maxRetries as number);
+        const reason = (e.reason as string) || (e.error as string);
+        set({ retryInfo: { visible: true, attempt, maxAttempts: max, reason } });
+        break;
+      }
+      case 'auto_retry_succeeded':
+        set({ retryInfo: null });
+        break;
+      case 'auto_retry_failed': case 'auto_retry_exhausted': {
+        const attempt = (e.attempt as number) || (e.retryCount as number) || 1;
+        const reason = (e.reason as string) || (e.error as string) || 'Retries exhausted';
+        set({ retryInfo: { visible: true, attempt, reason } });
+        break;
+      }
+      case 'queue_update': case 'queue_state': {
+        const active = (e.active as number) ?? 0;
+        const pending = (e.pending as number) ?? 0;
+        const total = (e.total as number) ?? (active + pending);
+        set({ queueState: total > 0 ? { active, pending, total } : null });
+        break;
+      }
+      case 'compaction_started':
+        set({ compactionInfo: { visible: true, phase: 'started', message: 'Compacting context…' } });
+        break;
+      case 'compaction_progress': {
+        const progress = (e.progress as number) || (e.percent as number);
+        set({ compactionInfo: { visible: true, phase: 'progress', progress, message: 'Compacting context…' } });
+        break;
+      }
+      case 'compaction_completed': case 'compaction_success':
+        set({ compactionInfo: { visible: true, phase: 'completed', message: 'Context compacted' } });
+        setTimeout(() => {
+          if (get().compactionInfo?.phase === 'completed') set({ compactionInfo: null });
+        }, 2500);
+        break;
+      case 'compaction_failed': case 'compaction_error':
+        set({ compactionInfo: { visible: true, phase: 'failed', message: (e.error as string) || 'Compaction failed' } });
+        setTimeout(() => set({ compactionInfo: null }), 4000);
+        break;
+      case 'new_chat':
+        get().newSession().catch(() => {});
+        break;
+      case 'open_settings':
+        get().toggleSettings();
+        break;
     }
   },
 
@@ -396,5 +694,93 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   updateLastMessage: (content: string) => {
     set((state) => { const msgs = [...state.messages]; const last = msgs[msgs.length - 1]; if (last) last.content += content; return { messages: msgs }; });
+  },
+
+  // ─── M8: Export / Import ───────────────────────────────────
+
+  exportCurrentMessagesMarkdown: () => {
+    const msgs = get().messages;
+    const lines: string[] = [];
+    lines.push(`# Pi Desktop Session Export`);
+    lines.push('');
+    lines.push(`_Exported: ${new Date().toISOString()}_`);
+    if (get().currentSessionId) lines.push(`_Session: ${get().currentSessionId}_`);
+    if (get().currentModel) lines.push(`_Model: ${get().currentModel?.provider}/${get().currentModel?.modelId}_`);
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    for (const m of msgs) {
+      const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
+      const role = m.role === 'user' ? '🧑 User' : m.role === 'assistant' ? '🤖 Pi' : m.role === 'tool' ? '🛠 Tool' : 'System';
+      lines.push(`## ${role} — ${ts}`);
+      lines.push('');
+      lines.push(m.content || '_(empty)_');
+      lines.push('');
+    }
+    return lines.join('\n');
+  },
+
+  exportCurrentMessagesHtml: () => {
+    const msgs = get().messages;
+    const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const body = msgs.map((m) => {
+      const role = m.role === 'user' ? 'user' : 'assistant';
+      const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
+      return `<div class="msg ${role}"><div class="role">${escape(m.role)}</div><div class="ts">${escape(ts)}</div><div class="content"><pre>${escape(m.content || '')}</pre></div></div>`;
+    }).join('\n');
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Pi Desktop Export</title>
+<style>
+body{font-family:-apple-system,sans-serif;max-width:820px;margin:40px auto;padding:0 20px;color:#222;background:#fafafa}
+.msg{padding:14px 18px;margin:10px 0;border-radius:8px;border:1px solid #e0e0e0}
+.msg.user{background:#e8f5ff;border-color:#b8dcf5}
+.msg.assistant{background:#fff}
+.role{font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:.5px;color:#666}
+.ts{font-size:11px;color:#999;margin-bottom:8px}
+.content pre{white-space:pre-wrap;font-family:'SF Mono',monospace;font-size:13px;margin:0}
+</style></head><body><h1>Pi Desktop Session Export</h1>
+<p><em>Exported: ${new Date().toISOString()}</em></p>
+${body}
+</body></html>`;
+  },
+
+  exportMarkdown: async (outPath?: string) => {
+    const content = get().exportCurrentMessagesMarkdown();
+    const target = outPath || `pi-session-${Date.now()}.md`;
+    if (pi.saveExportFile) {
+      return await pi.saveExportFile(target, content);
+    }
+    return target;
+  },
+
+  exportHtml: async (outPath?: string) => {
+    const content = get().exportCurrentMessagesHtml();
+    const target = outPath || `pi-session-${Date.now()}.html`;
+    if (pi.saveExportFile) {
+      return await pi.saveExportFile(target, content);
+    }
+    return target;
+  },
+
+  exportJson: async (outPath?: string) => {
+    const data = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      sessionId: get().currentSessionId,
+      model: get().currentModel,
+      messages: get().messages,
+    };
+    const content = JSON.stringify(data, null, 2);
+    const target = outPath || `pi-session-${Date.now()}.json`;
+    if (pi.saveExportFile) {
+      return await pi.saveExportFile(target, content);
+    }
+    return target;
+  },
+
+  importJsonl: async (filePath: string) => {
+    if (pi.importJsonl) {
+      await pi.importJsonl(filePath);
+    }
+    get().loadSessions();
   },
 }));

@@ -4,7 +4,8 @@ mod pi_config;
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State};
+use std::sync::atomic::{AtomicU32, Ordering};
+use tauri::{Emitter, Manager, State, Listener};
 
 use pibridge::PiBridge;
 use pibridge::protocol::*;
@@ -16,6 +17,10 @@ use pi_config::*;
 struct AppState {
     bridge: Arc<Mutex<PiBridge>>,
     database: Arc<Mutex<AppDatabase>>,
+    /// Tray icon badge (unread message count). 0 = no badge.
+    tray_badge: Arc<AtomicU32>,
+    /// Crash recovery attempt counter (resets on successful restart).
+    restart_attempt: Arc<AtomicU32>,
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────
@@ -188,6 +193,8 @@ async fn pi_switch_session(
     session_path: String,
 ) -> Result<serde_json::Value, String> {
     let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    // Track session for crash recovery
+    bridge.set_last_session_file(Some(session_path.clone()));
     let params = serde_json::json!({"sessionPath": session_path});
     bridge.send_cmd_and_wait("switch_session", Some(params), 30)
 }
@@ -217,6 +224,63 @@ async fn pi_compact(
 ) -> Result<serde_json::Value, String> {
     let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
     bridge.send_cmd_and_wait("compact", None, 60)
+}
+
+#[tauri::command]
+async fn pi_set_thinking_level(
+    state: State<'_, AppState>,
+    level: String,
+) -> Result<serde_json::Value, String> {
+    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let params = serde_json::json!({ "level": level });
+    bridge.send_cmd_and_wait("set_thinking_level", Some(params), 30)
+}
+
+#[tauri::command]
+async fn pi_get_context_usage(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    // Pi may not support this directly; try get_session_stats and get_state
+    let mut usage = serde_json::json!({
+        "usedTokens": 0,
+        "contextWindow": 0,
+        "percent": 0,
+    });
+    if let Ok(stats) = bridge.send_cmd_and_wait("get_session_stats", None, 15) {
+        if let Some(obj) = stats.as_object() {
+            if let Some(t) = obj.get("totalTokens").and_then(|v| v.as_u64()) {
+                usage["usedTokens"] = serde_json::json!(t);
+            }
+            if let Some(w) = obj.get("contextWindow").and_then(|v| v.as_u64()) {
+                usage["contextWindow"] = serde_json::json!(w);
+            }
+        }
+    }
+    if let Ok(state_resp) = bridge.send_cmd_and_wait("get_state", None, 10) {
+        if let Some(obj) = state_resp.as_object() {
+            if let Some(model) = obj.get("model").and_then(|m| m.as_object()) {
+                if let Some(tl) = model.get("thinkingLevel").and_then(|v| v.as_str()) {
+                    usage["thinkingLevel"] = serde_json::json!(tl);
+                }
+            }
+            // Some Pi versions expose contextUsage directly
+            if let Some(u) = obj.get("contextUsage").and_then(|v| v.as_u64()) {
+                usage["usedTokens"] = serde_json::json!(u);
+            }
+            if let Some(w) = obj.get("contextWindow").and_then(|v| v.as_u64()) {
+                usage["contextWindow"] = serde_json::json!(w);
+            }
+        }
+    }
+    // Compute percent
+    let used = usage.get("usedTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let window = usage.get("contextWindow").and_then(|v| v.as_u64()).unwrap_or(0);
+    if window > 0 {
+        let pct = ((used as f64 / window as f64) * 100.0).round() as u64;
+        usage["percent"] = serde_json::json!(pct.min(100));
+    }
+    Ok(usage)
 }
 
 #[tauri::command]
@@ -280,6 +344,162 @@ async fn app_trust_cwd(
         &serde_json::to_string(&settings.trusted_cwds).unwrap_or_default(),
     )?;
 
+    Ok(())
+}
+
+// ─── M8: Export / Import Commands ─────────────────────────────
+
+/// Open a save dialog and write `content` to the chosen path.
+/// Returns the chosen path on success, or empty string if user cancelled.
+#[tauri::command]
+async fn save_export_file(
+    app: tauri::AppHandle,
+    default_name: String,
+    content: String,
+) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    // Split default name into name + extension for filter
+    let extension = match default_name.rsplit_once('.') {
+        Some((_, e)) => e.to_string(),
+        None => "txt".to_string(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    app.dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter(&extension.to_uppercase(), &[&extension])
+        .save_file(move |chosen_path: Option<tauri_plugin_dialog::FilePath>| {
+            let result = chosen_path.map(|p| p.to_string());
+            let _ = tx.send(result);
+        });
+
+    let path = rx
+        .recv()
+        .map_err(|e| format!("Dialog channel error: {}", e))?
+        .ok_or_else(|| "Save dialog cancelled".to_string())?;
+
+    // Strip the `file://` prefix if present
+    let clean_path = if let Some(stripped) = path.strip_prefix("file://") {
+        stripped.to_string()
+    } else {
+        path
+    };
+
+    std::fs::write(&clean_path, content.as_bytes())
+        .map_err(|e| format!("Failed to write export file: {}", e))?;
+
+    Ok(clean_path)
+}
+
+/// Import a .jsonl session file into Pi's sessions directory.
+/// Copies the file into ~/.pi/agent/sessions/ if not already there,
+/// then triggers a session list refresh on the frontend.
+#[tauri::command]
+async fn import_jsonl(
+    app: tauri::AppHandle,
+    file_path: String,
+) -> Result<(), String> {
+    let clean_path = if let Some(stripped) = file_path.strip_prefix("file://") {
+        stripped.to_string()
+    } else {
+        file_path
+    };
+
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "Cannot determine home directory".to_string())?;
+
+    let sessions_dir = format!("{}/.pi/agent/sessions", home);
+    std::fs::create_dir_all(&sessions_dir)
+        .map_err(|e| format!("Failed to create sessions dir: {}", e))?;
+
+    let file_name = std::path::Path::new(&clean_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid file path".to_string())?
+        .to_string();
+
+    let dest = format!("{}/{}", sessions_dir, file_name);
+
+    // If source and destination are the same, no copy needed
+    if std::path::Path::new(&clean_path).canonicalize().ok()
+        != std::path::Path::new(&dest).canonicalize().ok()
+    {
+        std::fs::copy(&clean_path, &dest)
+            .map_err(|e| format!("Failed to copy jsonl file: {}", e))?;
+    }
+
+    // Notify frontend to refresh sessions
+    let _ = app.emit("pi:event", serde_json::json!({
+        "type": "session_imported",
+        "path": dest,
+    }));
+
+    Ok(())
+}
+
+// ─── M7: Notification / Tray Badge Commands ───────────────────
+
+/// Show a desktop notification via tauri-plugin-notification.
+#[tauri::command]
+async fn show_notification(
+    _app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    _app.notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show()
+        .map_err(|e| format!("Failed to show notification: {}", e))?;
+    Ok(())
+}
+
+/// Update the tray icon tooltip with an unread count badge.
+/// (Tauri 2 doesn't support native overlay badges on macOS, so we encode it in the tooltip.)
+#[tauri::command]
+async fn set_tray_badge(
+    app: tauri::AppHandle,
+    count: u32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.tray_badge.store(count, Ordering::SeqCst);
+    let tooltip = if count > 0 {
+        format!("Pi Desktop · {} unread", count)
+    } else {
+        "Pi Desktop".to_string()
+    };
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some(&tooltip));
+    }
+    Ok(())
+}
+
+// ─── Crash Recovery Commands ──────────────────────────────────
+
+/// Manually trigger a pi process restart (also used by auto-recovery).
+#[tauri::command]
+async fn pi_restart(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    state.restart_attempt.fetch_add(1, Ordering::SeqCst);
+    let attempt = state.restart_attempt.load(Ordering::SeqCst);
+    bridge.restart_with_recovery(app.clone()).map_err(|e| {
+        // Emit process_died with restart_attempt so frontend can show banner
+        let _ = app.emit("pi:event", serde_json::json!({
+            "type": "process_died",
+            "reason": e,
+            "restart_attempt": attempt,
+        }));
+        e
+    })?;
+    state.restart_attempt.store(0, Ordering::SeqCst);
     Ok(())
 }
 
@@ -353,12 +573,21 @@ pub fn run() {
 
     let bridge = Arc::new(Mutex::new(PiBridge::new()));
     let database_for_setup = database.clone();
+    let tray_badge = Arc::new(AtomicU32::new(0));
+    let restart_attempt = Arc::new(AtomicU32::new(0));
+    let tray_badge_for_setup = tray_badge.clone();
+    let restart_attempt_for_setup = restart_attempt.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             bridge: bridge.clone(),
             database,
+            tray_badge: tray_badge_for_setup,
+            restart_attempt: restart_attempt_for_setup,
         })
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -418,6 +647,54 @@ pub fn run() {
                             }
                         }
                         _ => {}
+                    }
+                });
+            }
+
+            // ─── Crash recovery: listen for process_died events and auto-restart ─
+            {
+                let bridge_for_died = bridge.clone();
+                let restart_attempt_for_died = restart_attempt.clone();
+                let handle_for_died = handle.clone();
+                app.listen("pi:event", move |_event| {
+                    // We re-check inside by inspecting bridge state. The actual event payload
+                    // is delivered via the listener but we can't easily deserialize here,
+                    // so we use a polling-style check: only attempt restart if process not running.
+                    // The frontend also gets process_died and shows a banner; here we proactively
+                    // try to restart with exponential backoff (max 3 attempts).
+                    let attempt = restart_attempt_for_died.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt > 3 {
+                        log::error!("Max restart attempts (3) reached, giving up");
+                        restart_attempt_for_died.store(0, Ordering::SeqCst);
+                        return;
+                    }
+                    // Brief backoff: 500ms * attempt
+                    std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+                    let mut b = bridge_for_died.lock().unwrap();
+                    let needs_restart = {
+                        let mut p = b.process.lock().unwrap();
+                        !p.is_running()
+                    };
+                    if needs_restart {
+                        log::warn!("Auto-restart attempt #{}", attempt);
+                        match b.restart_with_recovery(handle_for_died.clone()) {
+                            Ok(()) => {
+                                log::info!("Auto-restart succeeded");
+                                restart_attempt_for_died.store(0, Ordering::SeqCst);
+                                // After restart, restore last session if any
+                                if let Some(last_session) = b.last_session_file() {
+                                    log::info!("Restoring last session: {}", last_session);
+                                    let params = serde_json::json!({"sessionPath": last_session});
+                                    let _ = b.send_cmd_and_wait("switch_session", Some(params), 30);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Auto-restart failed: {}", e);
+                            }
+                        }
+                    } else {
+                        // Process is still running; reset counter
+                        restart_attempt_for_died.store(0, Ordering::SeqCst);
                     }
                 });
             }
@@ -487,6 +764,8 @@ pub fn run() {
             pi_set_model,
             pi_get_session_stats,
             pi_compact,
+            pi_set_thinking_level,
+            pi_get_context_usage,
             pi_list_sessions,
             app_get_settings,
             app_set_settings,
@@ -506,6 +785,16 @@ pub fn run() {
             pi_restore_from_trash,
             pi_permanently_delete,
             pi_auto_cleanup,
+            // Rename / Import external
+            pi_rename_session,
+            pi_import_external_session,
+            pi_list_external_sessions,
+            // M7/M8/crash recovery
+            save_export_file,
+            import_jsonl,
+            show_notification,
+            set_tray_badge,
+            pi_restart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running pi-desktop application");
@@ -530,7 +819,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .item(&quit)
         .build()?;
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
         .tooltip("Pi Desktop")
         .on_menu_event(move |app, event| {

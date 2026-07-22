@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use chrono::{Datelike, Timelike};
+use tauri::Emitter;
 
 // ─── Pi agent home directory ───────────────────────────────
 
@@ -1066,3 +1067,631 @@ pub fn pi_auto_cleanup() -> Result<serde_json::Value, String> {
 // Note: The existing pi_list_sessions_detailed function is left unchanged.
 // Auto-cleanup happens when the frontend calls pi_auto_cleanup() on page load.
 // The frontend will call pi_auto_cleanup() before listing sessions.
+
+// ─── Rename Session ────────────────────────────────────────
+
+/// Update or insert a `session_info` entry (with `name`) in the session JSONL file.
+/// Used by the right-click "Rename" action in the sidebar.
+#[tauri::command]
+pub fn pi_rename_session(path: String, new_name: String) -> Result<(), String> {
+    let clean_path = if let Some(stripped) = path.strip_prefix("file://") {
+        stripped.to_string()
+    } else {
+        path
+    };
+    let file_path = Path::new(&clean_path);
+    if !file_path.exists() {
+        return Err("Session file not found".to_string());
+    }
+
+    let content = fs::read_to_string(file_path)
+        .map_err(|e| format!("Failed to read session: {}", e))?;
+
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let mut found = false;
+    let trimmed_name = new_name.trim();
+    if trimmed_name.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+
+    for line in &mut lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(mut obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if obj.get("type").and_then(|t| t.as_str()) == Some("session_info") {
+                obj["name"] = serde_json::Value::String(trimmed_name.to_string());
+                *line = serde_json::to_string(&obj).unwrap_or_else(|_| line.clone());
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if !found {
+        // Insert a session_info entry right after the session header (first line)
+        let info = serde_json::json!({
+            "type": "session_info",
+            "name": trimmed_name,
+        });
+        let info_line = serde_json::to_string(&info).unwrap_or_default();
+        if !lines.is_empty() {
+            lines.insert(1, info_line);
+        } else {
+            lines.push(info_line);
+        }
+    }
+
+    let new_content = lines.join("\n") + "\n";
+    fs::write(file_path, new_content.as_bytes())
+        .map_err(|e| format!("Failed to write session: {}", e))?;
+    Ok(())
+}
+
+// ─── Import from other Agent tools ─────────────────────────
+
+/// Convert a generic JSONL session file (opencode / claude-code / similar) into
+/// a Pi-compatible session JSONL file, then place it in Pi's sessions directory.
+/// Returns the destination path.
+///
+/// Format detection:
+/// - opencode: entries have `{"type":"message","role":"user|assistant","content":"..."}` or array content
+/// - claude-code: entries have `{"type":"user|assistant","message":{"role":"...","content":[...]}}`
+/// - generic: best-effort mapping from common fields
+#[tauri::command]
+pub fn pi_import_external_session(
+    app: tauri::AppHandle,
+    file_path: String,
+    source: String, // "opencode" | "claude_code" | "auto"
+) -> Result<String, String> {
+    let clean_path = if let Some(stripped) = file_path.strip_prefix("file://") {
+        stripped.to_string()
+    } else {
+        file_path
+    };
+    let src_path = Path::new(&clean_path);
+    if !src_path.exists() {
+        return Err("Source file not found".to_string());
+    }
+
+    let content = fs::read_to_string(src_path)
+        .map_err(|e| format!("Failed to read source: {}", e))?;
+
+    let detected_source = if source == "auto" {
+        detect_source_format(&content)
+    } else {
+        source.clone()
+    };
+
+    let messages = parse_external_messages(&content, &detected_source);
+
+    if messages.is_empty() {
+        return Err("No messages found in source file".to_string());
+    }
+
+    // Build Pi-compatible JSONL
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now();
+    let timestamp = now.to_rfc3339();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/".to_string());
+
+    let mut lines: Vec<String> = Vec::new();
+
+    // Session header
+    let session_header = serde_json::json!({
+        "type": "session",
+        "id": session_id,
+        "timestamp": timestamp,
+        "cwd": cwd,
+    });
+    lines.push(serde_json::to_string(&session_header).unwrap_or_default());
+
+    // session_info with source attribution as the name
+    let source_label = match detected_source.as_str() {
+        "opencode" => "OpenCode Import",
+        "claude_code" => "Claude Code Import",
+        _ => "Imported Session",
+    };
+    let info = serde_json::json!({
+        "type": "session_info",
+        "name": format!("{} · {}", source_label, now.format("%Y-%m-%d %H:%M")),
+        "source": detected_source,
+    });
+    lines.push(serde_json::to_string(&info).unwrap_or_default());
+
+    // Messages
+    let mut parent_id: Option<String> = None;
+    for msg in messages {
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        let mut entry = serde_json::json!({
+            "type": "message",
+            "id": msg_id,
+            "timestamp": msg.timestamp,
+            "message": {
+                "role": msg.role,
+                "content": msg.content,
+            },
+        });
+        if let Some(p) = &parent_id {
+            entry["parentId"] = serde_json::Value::String(p.clone());
+        }
+        lines.push(serde_json::to_string(&entry).unwrap_or_default());
+        parent_id = Some(msg_id);
+    }
+
+    let pi_content = lines.join("\n") + "\n";
+
+    // Write to Pi sessions directory
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "Cannot determine home directory".to_string())?;
+
+    // Use the source file's parent dir name as a cwd-slug, or fall back to a generic import dir
+    let source_dir_name = src_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("imported")
+        .to_string();
+    let cwd_slug = format!("--imported--{}--", sanitize_dir_name(&source_dir_name));
+
+    let sessions_dir = format!("{}/.pi/agent/sessions/{}", home, cwd_slug);
+    fs::create_dir_all(&sessions_dir)
+        .map_err(|e| format!("Failed to create sessions dir: {}", e))?;
+
+    let dest_filename = format!(
+        "{}_{}.jsonl",
+        now.format("%Y%m%d-%H%M%S"),
+        &session_id[..8]
+    );
+    let dest_path = format!("{}/{}", sessions_dir, dest_filename);
+
+    fs::write(&dest_path, pi_content.as_bytes())
+        .map_err(|e| format!("Failed to write imported session: {}", e))?;
+
+    // Notify frontend to refresh sessions
+    let _ = app.emit("pi:event", serde_json::json!({
+        "type": "session_imported",
+        "path": dest_path,
+        "source": detected_source,
+    }));
+
+    Ok(dest_path)
+}
+
+fn sanitize_dir_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect()
+}
+
+fn detect_source_format(content: &str) -> String {
+    // Look at first few non-empty lines for telltale fields
+    for line in content.lines().take(10) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        // Claude Code uses type:"user"|"assistant" with a `message` field
+        if let Some(t) = obj.get("type").and_then(|t| t.as_str()) {
+            if t == "user" || t == "assistant" {
+                if obj.get("message").is_some() {
+                    return "claude_code".to_string();
+                }
+            }
+            // OpenCode uses type:"message" with role/content at top level
+            if t == "message" {
+                return "opencode".to_string();
+            }
+            // Pi native
+            if t == "session" {
+                return "pi".to_string();
+            }
+        }
+    }
+    "generic".to_string()
+}
+
+struct ExternalMessage {
+    role: String,
+    content: Vec<serde_json::Value>,
+    timestamp: String,
+}
+
+fn parse_external_messages(content: &str, source: &str) -> Vec<ExternalMessage> {
+    let mut messages = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+
+        let parsed = match source {
+            "opencode" => parse_opencode_entry(&obj),
+            "claude_code" => parse_claude_code_entry(&obj),
+            _ => parse_generic_entry(&obj),
+        };
+        if let Some(msg) = parsed {
+            messages.push(msg);
+        }
+    }
+    messages
+}
+
+fn parse_opencode_entry(obj: &serde_json::Value) -> Option<ExternalMessage> {
+    let entry_type = obj.get("type").and_then(|t| t.as_str())?;
+    if entry_type != "message" {
+        return None;
+    }
+    let role = obj.get("role").and_then(|r| r.as_str())?.to_string();
+    let content = if let Some(arr) = obj.get("content").and_then(|c| c.as_array()) {
+        arr.clone()
+    } else if let Some(s) = obj.get("content").and_then(|c| c.as_str()) {
+        vec![serde_json::json!({"type": "text", "text": s})]
+    } else {
+        return None;
+    };
+    let timestamp = obj
+        .get("ts")
+        .or_else(|| obj.get("timestamp"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    Some(ExternalMessage {
+        role: normalize_role(&role),
+        content,
+        timestamp,
+    })
+}
+
+fn parse_claude_code_entry(obj: &serde_json::Value) -> Option<ExternalMessage> {
+    let entry_type = obj.get("type").and_then(|t| t.as_str())?;
+    let role = match entry_type {
+        "user" => "user".to_string(),
+        "assistant" => "assistant".to_string(),
+        _ => return None,
+    };
+    let message = obj.get("message")?;
+    let content = if let Some(arr) = message.get("content").and_then(|c| c.as_array()) {
+        arr.clone()
+    } else if let Some(s) = message.get("content").and_then(|c| c.as_str()) {
+        vec![serde_json::json!({"type": "text", "text": s})]
+    } else {
+        return None;
+    };
+    let timestamp = obj
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    Some(ExternalMessage {
+        role,
+        content,
+        timestamp,
+    })
+}
+
+fn parse_generic_entry(obj: &serde_json::Value) -> Option<ExternalMessage> {
+    // Accept either top-level role or message.role
+    let role = obj
+        .get("role")
+        .and_then(|r| r.as_str())
+        .or_else(|| obj.get("message").and_then(|m| m.get("role")).and_then(|r| r.as_str()))?
+        .to_string();
+    let content = if let Some(arr) = obj.get("content").and_then(|c| c.as_array()) {
+        arr.clone()
+    } else if let Some(s) = obj.get("content").and_then(|c| c.as_str()) {
+        vec![serde_json::json!({"type": "text", "text": s})]
+    } else if let Some(message) = obj.get("message") {
+        if let Some(arr) = message.get("content").and_then(|c| c.as_array()) {
+            arr.clone()
+        } else if let Some(s) = message.get("content").and_then(|c| c.as_str()) {
+            vec![serde_json::json!({"type": "text", "text": s})]
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    let timestamp = obj
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    Some(ExternalMessage {
+        role: normalize_role(&role),
+        content,
+        timestamp,
+    })
+}
+
+fn normalize_role(role: &str) -> String {
+    match role.to_lowercase().as_str() {
+        "user" | "human" => "user".to_string(),
+        "assistant" | "ai" | "bot" => "assistant".to_string(),
+        "system" => "system".to_string(),
+        "tool" | "toolresult" | "tool_result" => "tool".to_string(),
+        _ => role.to_string(),
+    }
+}
+
+// ─── Scan for external agent sessions ──────────────────────
+
+/// Discover importable sessions from opencode and claude-code installations.
+/// Returns a list of {tool, project, filePath, sessionId, timestamp, preview}.
+#[derive(Debug, Serialize, Clone)]
+pub struct ExternalSession {
+    pub tool: String,
+    pub project: String,
+    pub filePath: String,
+    pub sessionId: String,
+    pub timestamp: String,
+    pub preview: String,
+}
+
+#[tauri::command]
+pub fn pi_list_external_sessions() -> Result<Vec<ExternalSession>, String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "Cannot determine home directory".to_string())?;
+
+    let mut results = Vec::new();
+
+    // Claude Code: ~/.claude/projects/<project-slug>/<uuid>.jsonl
+    let claude_projects_dir = format!("{}/.claude/projects", home);
+    if let Ok(entries) = fs::read_dir(&claude_projects_dir) {
+        for entry in entries.flatten() {
+            let project_path = entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+            let project_name = project_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if let Ok(files) = fs::read_dir(&project_path) {
+                for file in files.flatten() {
+                    let fp = file.path();
+                    if fp.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if let Some(info) = parse_external_session_file(&fp, "claude_code", &project_name) {
+                        results.push(info);
+                    }
+                }
+            }
+        }
+    }
+
+    // OpenCode: ~/.local/share/opencode/sessions/** or ~/.opencode/sessions/**
+    let opencode_dirs = vec![
+        format!("{}/.local/share/opencode/sessions", home),
+        format!("{}/.opencode/sessions", home),
+        format!("{}/Library/Application Support/opencode/sessions", home),
+    ];
+    for dir in &opencode_dirs {
+        scan_opencode_dir(Path::new(dir), &mut results);
+    }
+
+    // Sort by timestamp desc
+    results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    // Limit to 100 most recent
+    results.truncate(100);
+    Ok(results)
+}
+
+fn scan_opencode_dir(dir: &Path, results: &mut Vec<ExternalSession>) {
+    if !dir.exists() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_opencode_dir(&path, results);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            let project_name = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if let Some(info) = parse_external_session_file(&path, "opencode", &project_name) {
+                results.push(info);
+            }
+        }
+    }
+}
+
+fn parse_external_session_file(fp: &Path, tool: &str, project: &str) -> Option<ExternalSession> {
+    let content = fs::read_to_string(fp).ok()?;
+    let first_line = content.lines().next()?;
+    let obj: serde_json::Value = serde_json::from_str(first_line).ok()?;
+
+    let session_id = obj
+        .get("sessionId")
+        .or_else(|| obj.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let timestamp = obj
+        .get("timestamp")
+        .or_else(|| obj.get("ts"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // First user message as preview
+    let preview = content
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .find_map(|o| {
+            let role = o
+                .get("role")
+                .and_then(|r| r.as_str())
+                .or_else(|| o.get("type").and_then(|t| t.as_str()))
+                .unwrap_or("");
+            if role == "user" || role == "message" {
+                let text = o
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        o.get("content")
+                            .and_then(|c| c.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|i| i.get("text"))
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .or_else(|| {
+                        o.get("message")
+                            .and_then(|m| m.get("content"))
+                            .and_then(|c| c.as_str())
+                            .map(|s| s.to_string())
+                    });
+                text
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    let preview_trimmed = if preview.len() > 120 {
+        format!("{}…", &preview[..120])
+    } else {
+        preview
+    };
+
+    Some(ExternalSession {
+        tool: tool.to_string(),
+        project: project.to_string(),
+        filePath: fp.to_string_lossy().to_string(),
+        sessionId: session_id,
+        timestamp,
+        preview: preview_trimmed,
+    })
+}
+
+// ─── Unit tests ────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_source_format_claude_code() {
+        let content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
+        assert_eq!(detect_source_format(content), "claude_code");
+    }
+
+    #[test]
+    fn detect_source_format_opencode() {
+        let content = r#"{"type":"message","role":"user","content":"hello"}"#;
+        assert_eq!(detect_source_format(content), "opencode");
+    }
+
+    #[test]
+    fn detect_source_format_pi_native() {
+        let content = r#"{"type":"session","id":"abc","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp"}"#;
+        assert_eq!(detect_source_format(content), "pi");
+    }
+
+    #[test]
+    fn detect_source_format_generic_fallback() {
+        let content = r#"{"role":"user","content":"hello"}"#;
+        assert_eq!(detect_source_format(content), "generic");
+    }
+
+    #[test]
+    fn detect_source_format_skips_empty_and_invalid_lines() {
+        let content = "\n  \nnot json\n{\"type\":\"message\",\"role\":\"user\"}";
+        assert_eq!(detect_source_format(content), "opencode");
+    }
+
+    #[test]
+    fn normalize_role_maps_variants() {
+        assert_eq!(normalize_role("user"), "user");
+        assert_eq!(normalize_role("HUMAN"), "user");
+        assert_eq!(normalize_role("assistant"), "assistant");
+        assert_eq!(normalize_role("AI"), "assistant");
+        assert_eq!(normalize_role("bot"), "assistant");
+        assert_eq!(normalize_role("system"), "system");
+        assert_eq!(normalize_role("tool"), "tool");
+        assert_eq!(normalize_role("toolResult"), "tool");
+        assert_eq!(normalize_role("tool_result"), "tool");
+    }
+
+    #[test]
+    fn normalize_role_preserves_unknown() {
+        assert_eq!(normalize_role("custom"), "custom");
+    }
+
+    #[test]
+    fn sanitize_dir_name_replaces_special_chars() {
+        assert_eq!(sanitize_dir_name("my project"), "my-project");
+        assert_eq!(sanitize_dir_name("a/b\\c"), "a-b-c");
+        assert_eq!(sanitize_dir_name("ok_name-1"), "ok_name-1");
+    }
+
+    #[test]
+    fn decode_project_name_strips_dashes_and_extracts_last_segment() {
+        // Double-dash segments become "/", leading/trailing "--" are trimmed.
+        let (decoded, project) = decode_project_name("--Users--foo--bar--");
+        assert_eq!(decoded, "Users/foo/bar");
+        assert_eq!(project, "bar");
+    }
+
+    #[test]
+    fn parse_timestamp_iso_rfc3339() {
+        let ts = parse_timestamp("2026-07-23T14:30:00Z");
+        assert_eq!(ts.year, 2026);
+        assert_eq!(ts.month, 7);
+        assert_eq!(ts.day, 23);
+        assert_eq!(ts.hour, 14);
+    }
+
+    #[test]
+    fn parse_timestamp_fallback() {
+        let ts = parse_timestamp("garbage");
+        // Falls back to defaults: year 2024, month 1, day 1, hour 0
+        assert_eq!(ts.year, 2024);
+        assert_eq!(ts.month, 1);
+        assert_eq!(ts.day, 1);
+        assert_eq!(ts.hour, 0);
+    }
+
+    #[test]
+    fn write_and_read_settings_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("pi_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("settings.json");
+
+        let settings = PiSettings {
+            defaultProvider: Some("anthropic".to_string()),
+            defaultModel: Some("claude-sonnet-4".to_string()),
+            enabledModels: Some(vec!["claude-sonnet-4".to_string()]),
+            ..Default::default()
+        };
+        write_json(&path, &settings).expect("write should succeed");
+
+        let read: PiSettings = read_json(&path).expect("read should succeed");
+        assert_eq!(read.defaultProvider.as_deref(), Some("anthropic"));
+        assert_eq!(read.defaultModel.as_deref(), Some("claude-sonnet-4"));
+        assert_eq!(read.enabledModels.as_deref(), Some(&["claude-sonnet-4".to_string()][..]));
+
+        let _ = std::fs::remove_file(&path);
+    }
+}

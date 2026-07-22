@@ -1,22 +1,42 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { ConfigProvider, theme, App as AntApp } from 'antd';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from './stores/appStore';
 import { usePiConfigStore } from './stores/piConfigStore';
-import { onPiEvent, onBinaryMissing } from './services/piBridge';
+import { onPiEvent, onBinaryMissing, setTrayBadge, showDesktopNotification } from './services/piBridge';
 import AppLayout from './components/AppLayout';
 import './i18n';
 import i18n from './i18n';
 
 const App: React.FC = () => {
-  const { settings, initialize, handlePiEvent } = useAppStore();
+  const { settings, initialize, handlePiEvent, unreadCount, markAllRead } = useAppStore();
   const { initialized: piConfigInitialized, init: initPiConfig } = usePiConfigStore();
+  const lastNotifiedMsgId = useRef<string | null>(null);
 
   // Initialize app on mount
   useEffect(() => {
     initialize();
 
+    let isFocused = true;
+    const win = getCurrentWindow();
+    win.onFocusChanged(({ payload: focused }) => {
+      isFocused = focused;
+      if (focused) markAllRead();
+    }).catch(() => {});
+
     const unlistenEvent = onPiEvent((event) => {
       handlePiEvent(event);
+
+      // M7: Desktop notification on new assistant message_end if window not focused
+      if (event.type === 'message_end' && !isFocused) {
+        const msgs = useAppStore.getState().messages;
+        const last = msgs[msgs.length - 1];
+        if (last && last.role === 'assistant' && last.id !== lastNotifiedMsgId.current && last.content) {
+          lastNotifiedMsgId.current = last.id;
+          const preview = last.content.slice(0, 120).replace(/[#*`>\-]/g, '').trim();
+          showDesktopNotification('Pi · New reply', preview || 'Assistant replied').catch(() => {});
+        }
+      }
     });
 
     const unlistenBinary = onBinaryMissing((payload) => {
@@ -28,6 +48,11 @@ const App: React.FC = () => {
       unlistenBinary.then((fn) => fn());
     };
   }, []);
+
+  // M7: Update tray badge whenever unreadCount changes
+  useEffect(() => {
+    setTrayBadge(unreadCount).catch(() => {});
+  }, [unreadCount]);
 
   // Initialize pi config store
   useEffect(() => {

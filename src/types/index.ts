@@ -211,3 +211,43 @@ export interface TrashEntry {
   lastActive: string;
   messageCount: number;
 }
+
+// ─── External agent import (opencode / claude code) ────────
+
+export interface ExternalSession {
+  tool: 'opencode' | 'claude_code' | string;
+  project: string;
+  filePath: string;
+  sessionId: string;
+  timestamp: string;
+  preview: string;
+}
+
+// ─── Context usage / thinking level ────────────────────────
+
+export interface ContextUsage {
+  usedTokens: number;
+  contextWindow: number;
+  percent: number;
+  thinkingLevel?: string;
+}
+
+export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high' | 'max';
+
+// ─── Slash command & @-mention autocomplete ────────────────
+
+export interface SlashCommand {
+  key: string;        // e.g. "/compact"
+  label: string;      // display label
+  description: string;
+  insertText?: string; // text to insert (defaults to key + " ")
+  category: 'action' | 'mode' | 'context';
+}
+
+export interface MentionItem {
+  key: string;        // unique id
+  label: string;      // display label
+  description?: string;
+  type: 'file' | 'session' | 'memory' | 'model';
+  insertText: string;  // text to insert after @
+}
