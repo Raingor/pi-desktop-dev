@@ -80,6 +80,8 @@ pub struct SessionEntry {
     pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parentSession: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessionName: Option<String>,
 }
 
 /// App settings stored in SQLite

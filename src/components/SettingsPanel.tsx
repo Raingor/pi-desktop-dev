@@ -6,13 +6,11 @@ import {
   Slider,
   Button,
   Space,
-  Divider,
   Tag,
   Empty,
 } from 'antd';
 import {
   CloseOutlined,
-  SettingOutlined,
   InfoCircleOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
@@ -33,7 +31,6 @@ const SettingsPanel: React.FC = () => {
     loadAvailableModels,
   } = useAppStore();
 
-  // Group models by provider
   const modelsByProvider = React.useMemo(() => {
     const map: Record<string, { value: string; label: string }[]> = {};
     for (const m of availableModels) {
@@ -57,47 +54,45 @@ const SettingsPanel: React.FC = () => {
   return (
     <div
       style={{
-        padding: 24,
+        padding: 32,
         maxWidth: 600,
         margin: '0 auto',
         height: '100%',
         overflow: 'auto',
       }}
     >
+      {/* Header */}
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginBottom: 24,
+          marginBottom: 32,
         }}
       >
-        <Title level={4} style={{ margin: 0 }}>
-          <SettingOutlined style={{ marginRight: 8 }} />
-          Settings
-        </Title>
+        <div>
+          <Title level={4} style={{ margin: 0, color: 'var(--text-primary)', fontWeight: 600 }}>
+            Settings
+          </Title>
+          <Text style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
+            Configure your Pi Desktop experience
+          </Text>
+        </div>
         <Button
           icon={<CloseOutlined />}
           onClick={toggleSettings}
           type="text"
+          style={{ color: 'var(--text-muted)', borderRadius: 8, width: 32, height: 32 }}
         />
       </div>
 
       {/* Appearance */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={5}>Appearance</Title>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 12,
-          }}
-        >
-          <Text>Theme</Text>
+      <Section title="Appearance">
+        <SettingRow label="Theme">
           <Select
             value={settings.theme}
             onChange={(value) => updateSettings({ theme: value as 'light' | 'dark' | 'system' })}
+            size="small"
             style={{ width: 140 }}
             options={[
               { value: 'light', label: 'Light' },
@@ -105,15 +100,8 @@ const SettingsPanel: React.FC = () => {
               { value: 'system', label: 'System' },
             ]}
           />
-        </div>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <Text>Font Size</Text>
+        </SettingRow>
+        <SettingRow label="Font Size">
           <div style={{ width: 200 }}>
             <Slider
               min={12}
@@ -122,140 +110,167 @@ const SettingsPanel: React.FC = () => {
               onChange={(value) => updateSettings({ font_size: value })}
             />
           </div>
-        </div>
-      </div>
+        </SettingRow>
+      </Section>
 
-      <Divider />
+      <DividerLine />
 
       {/* Model / Provider */}
-      <div style={{ marginBottom: 24 }}>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <Title level={5} style={{ margin: 0, marginBottom: 12 }}>
-            Model & Provider
-          </Title>
+      <Section title="Model & Provider"
+        extra={
           <Button
             size="small"
-            icon={<ReloadOutlined />}
+            type="text"
+            icon={<ReloadOutlined style={{ fontSize: 12 }} />}
             onClick={loadAvailableModels}
+            style={{ color: 'var(--text-muted)', borderRadius: 6 }}
           >
-            Refresh
+            <span style={{ fontSize: 11 }}>Refresh</span>
           </Button>
-        </div>
-
+        }
+      >
         {availableModels.length === 0 ? (
           <Empty
-            description="No models available"
+            description={<span style={{ color: 'var(--text-muted)' }}>No models available</span>}
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            style={{ margin: '12px 0' }}
+            style={{ margin: '16px 0' }}
           >
-            <Text type="secondary" style={{ fontSize: 12 }}>
+            <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>
               Configure a provider in Pi first: run{' '}
-              <Tag>pi /login &lt;provider&gt;</Tag> in your terminal
+              <Tag style={{ borderColor: 'var(--border-color)', color: 'var(--accent-teal)' }}>pi /login &lt;provider&gt;</Tag> in your terminal
             </Text>
           </Empty>
         ) : (
           <>
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: 12,
-              }}
-            >
-              <Text>Provider</Text>
+            <SettingRow label="Provider">
               <Select
+                size="small"
                 value={currentProvider}
                 onChange={(provider) => {
                   const firstModel = modelsByProvider[provider]?.[0]?.value;
-                  if (firstModel) {
-                    setModel(provider, firstModel);
-                  }
+                  if (firstModel) setModel(provider, firstModel);
                 }}
                 style={{ width: 200 }}
                 options={providerOptions}
               />
-            </div>
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <Text>Model</Text>
+            </SettingRow>
+            <SettingRow label="Model">
               <Select
+                size="small"
                 value={currentModel?.modelId}
                 onChange={(modelId) => setModel(currentProvider, modelId)}
                 style={{ width: 200 }}
                 options={modelOptions}
               />
-            </div>
+            </SettingRow>
           </>
         )}
-      </div>
+      </Section>
 
-      <Divider />
+      <DividerLine />
 
       {/* Privacy */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={5}>Privacy</Title>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
+      <Section title="Privacy">
+        <SettingRow
+          label={
+            <Space size={6}>
+              <span>Telemetry</span>
+              <InfoCircleOutlined
+                style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'help' }}
+                title="Anonymous usage data to improve the product"
+              />
+            </Space>
+          }
         >
-          <Space>
-            <Text>Telemetry</Text>
-            <InfoCircleOutlined
-              style={{ color: '#999', cursor: 'help' }}
-              title="Anonymous usage data to improve the product"
-            />
-          </Space>
           <Switch
             checked={settings.telemetry_opt_in}
-            onChange={(checked) =>
-              updateSettings({ telemetry_opt_in: checked })
-            }
+            onChange={(checked) => updateSettings({ telemetry_opt_in: checked })}
           />
-        </div>
-      </div>
+        </SettingRow>
+      </Section>
 
-      <Divider />
+      <DividerLine />
 
       {/* About */}
-      <div>
-        <Title level={5}>About</Title>
-        <div style={{ marginBottom: 8 }}>
-          <Text type="secondary">Pi Version: </Text>
-          <Tag>{piVersion || 'Not found'}</Tag>
-        </div>
-        <div style={{ marginBottom: 8 }}>
-          <Text type="secondary">Binary Path: </Text>
-          <Text code style={{ fontSize: 12 }}>
-            {piBinaryPath || 'N/A'}
-          </Text>
-        </div>
-        <div style={{ marginBottom: 8 }}>
-          <Text type="secondary">App Version: </Text>
-          <Tag>0.1.0</Tag>
-        </div>
+      <Section title="About">
+        <AboutRow label="Pi Version" value={piVersion || 'Not found'} />
+        <AboutRow label="Binary Path" value={piBinaryPath || 'N/A'} mono />
+        <AboutRow label="App Version" value="0.1.0" />
         <div style={{ marginTop: 16 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
+          <Text style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.6 }}>
             Pi Desktop is a GUI client for the Pi-Agent coding agent.
+            It communicates with the local Pi process via stdin/stdout JSONL.
           </Text>
         </div>
-      </div>
+      </Section>
     </div>
   );
 };
+
+// ─── Sub-components ────────────────────────────────────────
+
+const Section: React.FC<{ title: string; children: React.ReactNode; extra?: React.ReactNode }> = ({ title, children, extra }) => (
+  <div style={{ marginBottom: 28 }}>
+    <div style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 16,
+    }}>
+      <Text style={{
+        fontSize: 13,
+        fontWeight: 600,
+        color: 'var(--text-primary)',
+        letterSpacing: '0.3px',
+      }}>
+        {title}
+      </Text>
+      {extra}
+    </div>
+    {children}
+  </div>
+);
+
+const SettingRow: React.FC<{ label: React.ReactNode; children: React.ReactNode }> = ({ label, children }) => (
+  <div
+    style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: '10px 12px',
+      marginBottom: 4,
+      borderRadius: 8,
+      background: 'var(--bg-secondary)',
+      border: '1px solid var(--border-color)',
+    }}
+  >
+    <Text style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{label}</Text>
+    {children}
+  </div>
+);
+
+const AboutRow: React.FC<{ label: string; value: string; mono?: boolean }> = ({ label, value, mono }) => (
+  <div style={{
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '6px 0',
+  }}>
+    <Text style={{ color: 'var(--text-muted)', fontSize: 12, minWidth: 80 }}>{label}</Text>
+    <Tag style={{
+      borderColor: 'var(--border-color)',
+      color: 'var(--text-secondary)',
+      background: 'var(--bg-surface)',
+      fontFamily: mono ? 'var(--font-mono)' : undefined,
+      fontSize: 11,
+    }}>
+      {value}
+    </Tag>
+  </div>
+);
+
+const DividerLine: React.FC = () => (
+  <div style={{ height: 1, background: 'var(--border-color)', margin: '0 0 28px 0' }} />
+);
 
 export default SettingsPanel;

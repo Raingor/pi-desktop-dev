@@ -41,6 +41,7 @@ export interface SessionEntry {
   timestamp: string;
   cwd: string;
   parentSession?: string;
+  sessionName?: string;
 }
 
 export interface AppSettings {
@@ -94,4 +95,117 @@ export interface SessionStats {
   contextWindow?: number;
   cost?: number;
   turnCount?: number;
+}
+
+// ─── pi-web-switch merged types ─────────────────────────────
+
+export interface ModelCost {
+  input: number; output: number; cacheRead: number; cacheWrite: number;
+}
+
+export interface Model {
+  id: string; name?: string; api?: string; baseUrl?: string;
+  reasoning?: boolean; input?: string[]; cost?: ModelCost;
+  contextWindow?: number; maxTokens?: number; enabled?: boolean;
+  compat?: Record<string, unknown>;
+}
+
+export interface ProviderAuth {
+  type: 'api_key' | 'oauth'; key?: string; env?: Record<string, string>;
+}
+
+export interface Provider {
+  id: string; name: string; type: 'builtin' | 'custom';
+  baseUrl?: string; api?: string; apiKey?: string;
+  models: Model[]; hasAuth: boolean; authMethod?: string;
+  headers?: Record<string, string>;
+}
+
+export interface PiSettings {
+  defaultProvider?: string; defaultModel?: string; defaultThinkingLevel?: string;
+  theme?: string; hideThinkingBlock?: boolean; retry?: { enabled: boolean };
+  packages?: string[]; enabledModels?: string[];
+}
+
+export interface PiAuth {
+  [providerId: string]: ProviderAuth;
+}
+
+export interface CustomProviderConfig {
+  baseUrl?: string; api?: string; apiKey?: string;
+  models?: Model[]; compat?: Record<string, unknown>;
+}
+
+export interface PiModelsJson {
+  providers: Record<string, CustomProviderConfig>;
+}
+
+export interface PiConfig {
+  settings: PiSettings; auth: PiAuth; modelsJson: PiModelsJson | null;
+}
+
+export interface UsageRecord {
+  date: string; hour?: number; providerId: string; modelId: string;
+  inputTokens: number; outputTokens: number;
+  cacheReadTokens: number; cacheWriteTokens: number;
+  requests: number; cost: number;
+}
+
+export interface DailyBreakdown {
+  date: string; input: number; output: number;
+  cacheRead: number; cacheWrite: number; cost: number; requests: number;
+}
+
+export interface HourlyBreakdown {
+  hour: string; input: number; output: number;
+  cacheRead: number; cacheWrite: number; cost: number; requests: number;
+}
+
+export interface RequestLogEntry {
+  timestamp: string; providerId: string; modelId: string;
+  input: number; output: number; cost: number; requests: number;
+}
+
+export interface ProviderStat {
+  providerId: string; totalTokens: number; totalInput: number;
+  totalOutput: number; totalCost: number; totalRequests: number; modelCount: number;
+}
+
+export interface ModelStat {
+  modelId: string; providerId: string; totalTokens: number;
+  totalInput: number; totalOutput: number; totalCost: number; totalRequests: number;
+}
+
+export interface UsageRangeData {
+  totalTokens: number; totalInput: number; totalOutput: number;
+  totalCacheRead: number; totalCacheWrite: number; totalCost: number;
+  totalRequests: number; cacheHitRate: number;
+  dailyBreakdown: DailyBreakdown[]; hourlyBreakdown: HourlyBreakdown[];
+  requestLog: RequestLogEntry[]; providerStats: ProviderStat[]; modelStats: ModelStat[];
+}
+
+export interface MemoryFile {
+  name: string; filename: string; content: string; updatedAt: string;
+}
+
+export interface DetailedSessionEntry {
+  id: string; fileName: string; filePath: string;
+  timestamp: string; lastActive: string;
+  name?: string; provider?: string; model?: string;
+  messageCount: number; duration?: number;
+}
+
+export interface ProjectGroup {
+  projectPath: string; projectName: string;
+  sessions: DetailedSessionEntry[]; totalSessions: number; lastActive: string;
+}
+
+export interface TrashEntry {
+  originalPath: string;
+  fileName: string;
+  trashedAt: string;
+  sessionId: string;
+  sessionName?: string;
+  lastActive: string;
+  messageCount: number;
 }

@@ -10,7 +10,7 @@ fn pi_agent_dir() -> PathBuf {
 }
 
 /// List all sessions by scanning `~/.pi/agent/sessions/--<cwd-slug>--/*.jsonl`
-/// Parses only the first line (SessionHeader) for display info.
+/// Parses the first line (SessionHeader) for display info, and scans for session_info name.
 pub fn list_sessions(cwd: Option<&str>) -> Vec<SessionEntry> {
     let sessions_dir = pi_agent_dir();
     let mut entries = Vec::new();
@@ -62,10 +62,12 @@ pub fn list_sessions(cwd: Option<&str>) -> Vec<SessionEntry> {
     entries
 }
 
-/// Parse the first line of a session JSONL file to extract header info.
+/// Parse the first line of a session JSONL file to extract header info,
+/// and scan for session_info lines to get the session name.
 fn parse_session_header(path: &Path) -> Option<SessionEntry> {
     let content = fs::read_to_string(path).ok()?;
-    let first_line = content.lines().next()?;
+    let lines: Vec<&str> = content.lines().collect();
+    let first_line = lines.first()?;
 
     let val: serde_json::Value = serde_json::from_str(first_line).ok()?;
 
@@ -85,12 +87,27 @@ fn parse_session_header(path: &Path) -> Option<SessionEntry> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Scan for session_info line to get the session name
+    let mut session_name: Option<String> = None;
+    for line in lines.iter().skip(1) {
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            if entry.get("type").and_then(|t| t.as_str()) == Some("session_info") {
+                session_name = entry.get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                break;
+            }
+        }
+    }
+
     Some(SessionEntry {
         path: path.to_string_lossy().to_string(),
         id,
         timestamp,
         cwd,
         parentSession: parent_session,
+        sessionName: session_name,
     })
 }
 

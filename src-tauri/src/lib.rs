@@ -1,5 +1,6 @@
 mod pibridge;
 mod db;
+mod pi_config;
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -9,6 +10,7 @@ use pibridge::PiBridge;
 use pibridge::protocol::*;
 use pibridge::jsonl;
 use db::AppDatabase;
+use pi_config::*;
 
 /// Application state shared across Tauri commands
 struct AppState {
@@ -350,6 +352,7 @@ pub fn run() {
     };
 
     let bridge = Arc::new(Mutex::new(PiBridge::new()));
+    let database_for_setup = database.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -364,6 +367,59 @@ pub fn run() {
             {
                 let mut b = bridge.lock().unwrap();
                 b.set_app_handle(handle.clone());
+            }
+
+            // Restore window state from database
+            if let Ok(db) = database_for_setup.lock() {
+                if let Some(state) = db.get_window_state() {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.set_position(tauri::PhysicalPosition::new(state.x, state.y));
+                        let _ = window.set_size(tauri::PhysicalSize::new(state.w, state.h));
+                        if state.is_maximized {
+                            let _ = window.maximize();
+                        }
+                    }
+                }
+            }
+
+            // Save window state on resize/move/maximize
+            let db_clone = database_for_setup.clone();
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    match event {
+                        tauri::WindowEvent::Resized(size) => {
+                            // Debounce: only save on final position, not during resize
+                            if let Ok(win) = window_clone.outer_position() {
+                                let is_max = window_clone.is_maximized().unwrap_or(false);
+                                if let Ok(db) = db_clone.lock() {
+                                    let _ = db.set_window_state(&WindowGeometry {
+                                        x: win.x,
+                                        y: win.y,
+                                        w: size.width,
+                                        h: size.height,
+                                        is_maximized: is_max,
+                                    });
+                                }
+                            }
+                        }
+                        tauri::WindowEvent::Moved(position) => {
+                            if let Ok(size) = window_clone.inner_size() {
+                                let is_max = window_clone.is_maximized().unwrap_or(false);
+                                if let Ok(db) = db_clone.lock() {
+                                    let _ = db.set_window_state(&WindowGeometry {
+                                        x: position.x,
+                                        y: position.y,
+                                        w: size.width,
+                                        h: size.height,
+                                        is_maximized: is_max,
+                                    });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                });
             }
 
             // Spawn pi process in background
@@ -435,6 +491,21 @@ pub fn run() {
             app_get_settings,
             app_set_settings,
             app_trust_cwd,
+            pi_read_settings,
+            pi_write_settings,
+            pi_read_auth,
+            pi_write_auth,
+            pi_read_models,
+            pi_write_models,
+            pi_read_all_usage,
+            pi_get_usage_by_range,
+            pi_read_memory_files,
+            pi_list_sessions_detailed,
+            pi_delete_session,
+            pi_list_trash,
+            pi_restore_from_trash,
+            pi_permanently_delete,
+            pi_auto_cleanup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running pi-desktop application");

@@ -14,7 +14,6 @@ interface PiMessage {
 
 /** Infer message role from raw pi session entry */
 function inferRole(entry: Record<string, unknown>): ChatMessage['role'] {
-  // Pi's format: entry.message.role
   const msg = entry.message as PiMessage | undefined;
   if (msg?.role) {
     const r = msg.role;
@@ -23,7 +22,6 @@ function inferRole(entry: Record<string, unknown>): ChatMessage['role'] {
     if (r === 'toolResult' || r === 'tool') return 'tool';
     if (r === 'system') return 'system';
   }
-  // Fallback: check entry-level fields
   if (entry.type === 'user' || entry.from === 'user') return 'user';
   if (entry.type === 'assistant') return 'assistant';
   if (entry.type === 'toolResult' || entry.type === 'tool') return 'tool';
@@ -33,8 +31,6 @@ function inferRole(entry: Record<string, unknown>): ChatMessage['role'] {
 /** Extract displayable text from Pi's content array format */
 function extractContent(entry: Record<string, unknown>): string {
   const parts: string[] = [];
-
-  // Pi format: entry.message.content is an array of ContentItem
   const msg = entry.message as PiMessage | undefined;
   const contentItems = msg?.content;
 
@@ -44,7 +40,6 @@ function extractContent(entry: Record<string, unknown>): string {
       if (t === 'text' && typeof item.text === 'string') {
         parts.push(item.text);
       } else if (t === 'thinking' && typeof item.thinking === 'string') {
-        // Truncate long thinking, show as a dimmed section
         const maxThinkLen = 300;
         const truncated = item.thinking.length > maxThinkLen
           ? item.thinking.slice(0, maxThinkLen) + '…'
@@ -58,24 +53,18 @@ function extractContent(entry: Record<string, unknown>): string {
             : '';
         parts.push(`\n\`\`\`tool:${item.name}\n${args}\n\`\`\``);
       } else if (t === 'toolResult') {
-        // Tool results are handled as separate entries, skip here
         continue;
       }
     }
   }
 
   if (parts.length > 0) return parts.join('\n\n');
-
-  // Fallback: check error message
   if (typeof (entry.message as any)?.errorMessage === 'string') {
     return `⚠️ Error: ${(entry.message as any).errorMessage}`;
   }
-
-  // Fallback: check top-level text fields
   if (typeof entry.content === 'string') return entry.content;
   if (typeof entry.text === 'string') return entry.text;
   if (typeof entry.message === 'string') return entry.message;
-
   return '';
 }
 
@@ -85,7 +74,6 @@ function normalizeTimestamp(entry: Record<string, unknown>): string {
   if (typeof entry.timestamp === 'number') {
     return new Date(entry.timestamp).toISOString();
   }
-  // Check message.timestamp (epoch number)
   const msg = entry.message as Record<string, unknown> | undefined;
   if (msg && typeof msg.timestamp === 'number') {
     return new Date(msg.timestamp).toISOString();
@@ -94,35 +82,24 @@ function normalizeTimestamp(entry: Record<string, unknown>): string {
 }
 
 interface AppState {
-  // Bootstrap
   bootstrapped: boolean;
   piVersion: string;
   piBinaryPath: string;
   piConnected: boolean;
   piMissing: boolean;
-
-  // Chat
   messages: ChatMessage[];
   isStreaming: boolean;
   inputValue: string;
   loadingMessages: boolean;
-
-  // Sessions
   sessions: SessionEntry[];
   currentSessionId: string | null;
-
-  // Settings
   settings: AppSettings;
   settingsOpen: boolean;
-
-  // Model / Provider
   availableModels: ProviderModel[];
   currentModel: { provider: string; modelId: string } | null;
-
-  // Sidebar
   sidebarOpen: boolean;
+  activeView: string;
 
-  // Actions
   initialize: () => Promise<void>;
   sendMessage: (content: string, images?: string[]) => Promise<void>;
   abortStream: () => Promise<void>;
@@ -140,15 +117,9 @@ interface AppState {
   loadMessages: () => Promise<void>;
   loadAvailableModels: () => Promise<void>;
   setModel: (provider: string, modelId: string) => Promise<void>;
+  setActiveView: (view: string) => void;
 }
 
-/**
- * Extract text delta from various event shapes.
- * Pi can send it as:
- *   { type: "message_update", text_delta: "..." }
- *   { type: "message_update", assistantMessageEvent: { text_delta: "..." } }
- *   { type: "text_delta", delta: "..." }
- */
 function extractDelta(event: PiEvent): string | null {
   const e = event as Record<string, unknown>;
   if (e.text_delta && typeof e.text_delta === 'string') return e.text_delta;
@@ -161,7 +132,6 @@ function extractDelta(event: PiEvent): string | null {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  // Initial state
   bootstrapped: false,
   piVersion: '',
   piBinaryPath: '',
@@ -184,6 +154,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   settingsOpen: false,
   sidebarOpen: true,
+  activeView: 'chat',
 
   // ─── Actions ─────────────────────────────────────────────────
 
@@ -201,6 +172,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (info.binaryPath) {
         get().loadSessions();
         get().loadSettings();
+        get().loadAvailableModels();
       }
     } catch (e) {
       console.error('Failed to initialize:', e);
@@ -210,20 +182,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   sendMessage: async (content: string, images?: string[]) => {
     if (!content.trim() || get().isStreaming) return;
-
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: content.trim(),
       timestamp: new Date().toISOString(),
     };
-
-    set((state) => ({
-      messages: [...state.messages, userMsg],
-      inputValue: '',
-      isStreaming: true,
-    }));
-
+    set((state) => ({ messages: [...state.messages, userMsg], inputValue: '', isStreaming: true }));
     try {
       await pi.piPrompt(content, images);
     } catch (e) {
@@ -231,10 +196,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => {
         const msgs = [...state.messages];
         const last = msgs[msgs.length - 1];
-        if (last && last.role === 'assistant') {
-          last.content = `Error: ${e}`;
-          last.isStreaming = false;
-        }
+        if (last && last.role === 'assistant') { last.content = `Error: ${e}`; last.isStreaming = false; }
         return { messages: msgs, isStreaming: false };
       });
     }
@@ -247,68 +209,43 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => {
         const msgs = [...state.messages];
         const last = msgs[msgs.length - 1];
-        if (last && last.isStreaming) {
-          last.isStreaming = false;
-        }
+        if (last && last.isStreaming) last.isStreaming = false;
         return { messages: msgs };
       });
-    } catch (e) {
-      console.error('Failed to abort:', e);
-    }
+    } catch (e) { console.error('Failed to abort:', e); }
   },
 
   newSession: async () => {
     try {
       set({ messages: [], currentSessionId: null, availableModels: [] });
       await pi.piNewSession();
-    } catch (e) {
-      console.error('Failed to create new session:', e);
-    }
+      // Get current model from pi state
+      try {
+        const state = await pi.piGetState() as any;
+        if (state?.model?.provider && state?.model?.modelId) {
+          set({ currentModel: { provider: state.model.provider, modelId: state.model.modelId } });
+        }
+      } catch {}
+    } catch (e) { console.error('Failed to create new session:', e); }
   },
 
   loadSessions: async () => {
     try {
       const sessions = await pi.piListSessions();
       set({ sessions });
-    } catch (e) {
-      console.error('Failed to load sessions:', e);
-    }
+    } catch (e) { console.error('Failed to load sessions:', e); }
   },
 
   switchSession: async (path: string) => {
-    // Find the session entry to get display info
     const session = get().sessions.find((s) => s.path === path);
-
-    set({
-      messages: [],
-      loadingMessages: true,
-      currentSessionId: path,
-    });
-
-    // Fire-and-forget: try to tell pi to switch sessions, but don't block on it
-    pi.piSwitchSession(path).catch((e) =>
-      console.warn('switch_session RPC failed (non-critical):', e)
-    );
-
-    // Load messages from the session file
-    // We try three approaches in order:
-    // 1. RPC get_messages (best, but may fail if pi version doesn't support it)
-    // 2. Local session file parse (fallback, gives us the raw entries)
-    // 3. Show session metadata if all else fails
+    set({ messages: [], loadingMessages: true, currentSessionId: path });
+    pi.piSwitchSession(path).catch((e) => console.warn('switch_session RPC failed (non-critical):', e));
     try {
       await get().loadMessages();
     } catch (e) {
       console.error('Failed to load messages for session:', e);
-      // Show a fallback message with session info
       if (session) {
-        set({
-          messages: [{
-            id: session.id,
-            role: 'system',
-            content: `Session: ${session.id}\nCreated: ${session.timestamp}\nDirectory: ${session.cwd}`,
-            timestamp: session.timestamp,
-          }],
-        });
+        set({ messages: [{ id: session.id, role: 'system', content: `Session: ${session.id}\nCreated: ${session.timestamp}\nDirectory: ${session.cwd}`, timestamp: session.timestamp }] });
       }
       set({ loadingMessages: false });
     }
@@ -318,76 +255,56 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessionPath = get().currentSessionId;
     set({ loadingMessages: true });
 
-    // Helper to parse raw entries into ChatMessage format
     const toMessages = (entries: any[]): ChatMessage[] =>
-      entries
-        .filter((e: Record<string, unknown>) => {
-          const t = e.type as string | undefined;
-          // Only include actual message entries, skip headers/responses/model_changes etc.
-          return t === 'message';
-        })
+      entries.filter((e: Record<string, unknown>) => (e.type as string) === 'message')
         .map((m: Record<string, unknown>) => {
           const content = extractContent(m);
-          // Skip entries with no displayable content
           if (!content) return null;
-          return {
-            id: (m.id as string) || crypto.randomUUID(),
-            role: inferRole(m),
-            content,
-            timestamp: normalizeTimestamp(m),
-          } as ChatMessage;
-        })
-        .filter(Boolean) as ChatMessage[];
+          return { id: (m.id as string) || crypto.randomUUID(), role: inferRole(m), content, timestamp: normalizeTimestamp(m) } as ChatMessage;
+        }).filter(Boolean) as ChatMessage[];
+
+    // Extract current model from session entries (model_change type)
+    const extractModel = (entries: any[]) => {
+      let lastModel: { provider: string; modelId: string } | null = null;
+      for (const e of entries) {
+        if ((e.type as string) === 'model_change' && e.provider && e.modelId) {
+          lastModel = { provider: e.provider, modelId: e.modelId };
+        }
+      }
+      return lastModel;
+    };
 
     try {
-      // Try 1: RPC get_messages
       const result = await pi.piGetMessages();
-
       let rawMessages: any[] | null = null;
-
-      if (Array.isArray(result)) {
-        rawMessages = result;
-      } else if (result && typeof result === 'object') {
+      if (Array.isArray(result)) { rawMessages = result; }
+      else if (result && typeof result === 'object') {
         const obj = result as Record<string, unknown>;
         if (Array.isArray(obj.messages)) rawMessages = obj.messages;
         else if (Array.isArray(obj.entries)) rawMessages = obj.entries;
         else if (Array.isArray(obj.data)) rawMessages = obj.data;
       }
-
       if (rawMessages && rawMessages.length > 0) {
-        set({ messages: toMessages(rawMessages) });
+        const model = extractModel(rawMessages);
+        set({ messages: toMessages(rawMessages), ...(model ? { currentModel: model } : {}) });
         return;
       }
-
-      // Try 2: Fallback — read session file directly
       if (sessionPath) {
         const fileEntries = await pi.piReadSessionFile(sessionPath);
         if (fileEntries && fileEntries.length > 0) {
-          set({ messages: toMessages(fileEntries) });
+          const model = extractModel(fileEntries);
+          set({ messages: toMessages(fileEntries), ...(model ? { currentModel: model } : {}) });
           return;
         }
       }
-
-      // No messages found
       set({ messages: [] });
-
     } catch (e) {
       console.error('loadMessages failed:', e);
       if (sessionPath) {
-        try {
-          const fileEntries = await pi.piReadSessionFile(sessionPath);
-          if (fileEntries && fileEntries.length > 0) {
-            set({ messages: toMessages(fileEntries) });
-            return;
-          }
-        } catch (e2) {
-          console.error('Fallback file read also failed:', e2);
-        }
+        try { const fileEntries = await pi.piReadSessionFile(sessionPath); if (fileEntries && fileEntries.length > 0) { set({ messages: toMessages(fileEntries) }); return; } } catch {}
       }
       set({ messages: [] });
-    } finally {
-      set({ loadingMessages: false });
-    }
+    } finally { set({ loadingMessages: false }); }
   },
 
   loadAvailableModels: async () => {
@@ -396,10 +313,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (result && Array.isArray(result)) {
         set({ availableModels: result as ProviderModel[] });
       } else if (result && typeof result === 'object') {
-        // Some versions return {models: [...]}
         const data = result as Record<string, unknown>;
         if (Array.isArray(data.models)) {
-          set({ availableModels: data.models as ProviderModel[] });
+          // Pi RPC returns {models: [{id, name, provider, ...}]} - map to ProviderModel format
+          const mapped = (data.models as any[]).map((m: any) => ({
+            provider: m.provider || '',
+            modelId: m.id || '',
+            label: m.name || m.id || '',
+          }));
+          set({ availableModels: mapped });
         }
       }
     } catch (e) {
@@ -411,171 +333,67 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await pi.piSetModel(provider, modelId);
       set({ currentModel: { provider, modelId } });
-    } catch (e) {
-      console.error('Failed to set model:', e);
-    }
+    } catch (e) { console.error('Failed to set model:', e); }
   },
 
   loadSettings: async () => {
-    try {
-      const settings = await pi.appGetSettings();
-      set({ settings });
-    } catch (e) {
-      console.error('Failed to load settings:', e);
-    }
+    try { const settings = await pi.appGetSettings(); set({ settings }); } catch (e) { console.error('Failed to load settings:', e); }
   },
 
   updateSettings: async (patch: Partial<AppSettings>) => {
-    try {
-      await pi.appSetSettings(patch);
-      set((state) => ({
-        settings: { ...state.settings, ...patch },
-      }));
-    } catch (e) {
-      console.error('Failed to update settings:', e);
-    }
+    try { await pi.appSetSettings(patch); set((state) => ({ settings: { ...state.settings, ...patch } })); } catch (e) { console.error('Failed to update settings:', e); }
   },
+
+  setActiveView: (view: string) => { set({ activeView: view }); },
 
   toggleSettings: () => {
     const wasOpen = get().settingsOpen;
-    set({ settingsOpen: !wasOpen });
-    // Load available models when settings panel opens
-    if (!wasOpen) {
-      get().loadAvailableModels();
-    }
+    set({ settingsOpen: !wasOpen, activeView: wasOpen ? 'chat' : 'settings' });
+    if (!wasOpen) { get().loadAvailableModels(); }
   },
 
-  toggleSidebar: () => {
-    set((state) => ({ sidebarOpen: !state.sidebarOpen }));
-  },
+  toggleSidebar: () => { set((state) => ({ sidebarOpen: !state.sidebarOpen })); },
 
-  setInputValue: (value: string) => {
-    set({ inputValue: value });
-  },
-
-  // ─── Event Handling ─────────────────────────────────────────
+  setInputValue: (value: string) => { set({ inputValue: value }); },
 
   handlePiEvent: (event: PiEvent) => {
     const delta = extractDelta(event);
-
     switch (event.type) {
       case 'bootstrap':
-        set({
-          piConnected: true,
-          piMissing: false,
-          piVersion: (event as Record<string, string>).piVersion || '',
-        });
+        set({ piConnected: true, piMissing: false, piVersion: (event as Record<string, string>).piVersion || '' });
+        get().loadAvailableModels();
+        // Get current model from pi state
+        pi.piGetState().then((state: any) => {
+          if (state?.model?.provider && state?.model?.modelId) {
+            set({ currentModel: { provider: state.model.provider, modelId: state.model.modelId } });
+          }
+        }).catch(() => {});
         break;
-
-      case 'binary_missing':
-      case 'process_died':
-        set({ piMissing: true, piConnected: false, isStreaming: false });
-        break;
-
-      case 'agent_start':
-        set({ isStreaming: true });
-        break;
-
-      case 'agent_end':
-        set({ isStreaming: false });
-        get().loadSessions();
-        break;
-
-      case 'turn_start':
-        set({ isStreaming: true });
-        break;
-
-      case 'turn_end':
-        set({ isStreaming: false });
-        break;
-
+      case 'binary_missing': case 'process_died': set({ piMissing: true, piConnected: false, isStreaming: false }); break;
+      case 'agent_start': set({ isStreaming: true }); break;
+      case 'agent_end': set({ isStreaming: false }); get().loadSessions(); break;
+      case 'turn_start': set({ isStreaming: true }); break;
+      case 'turn_end': set({ isStreaming: false }); break;
       case 'message_start':
-        // Pi sends a message_start when a new assistant message begins
         const startPayload = event as Record<string, unknown>;
         const msgId = (startPayload.message as Record<string, unknown>)?.id as string || crypto.randomUUID();
-        const newMsg: ChatMessage = {
-          id: msgId,
-          role: 'assistant',
-          content: '',
-          timestamp: new Date().toISOString(),
-          isStreaming: true,
-        };
-        set((state) => ({
-          messages: [...state.messages, newMsg],
-          isStreaming: true,
-        }));
+        set((state) => ({ messages: [...state.messages, { id: msgId, role: 'assistant', content: '', timestamp: new Date().toISOString(), isStreaming: true }], isStreaming: true }));
         break;
-
-      case 'message_update':
-      case 'text_delta':
-        if (delta) {
-          get().updateLastMessage(delta);
-        }
-        break;
-
+      case 'message_update': case 'text_delta': if (delta) get().updateLastMessage(delta); break;
       case 'message_end':
         set({ isStreaming: false });
-        set((state) => {
-          const msgs = [...state.messages];
-          const last = msgs[msgs.length - 1];
-          if (last && last.isStreaming) {
-            last.isStreaming = false;
-          }
-          return { messages: msgs };
-        });
+        set((state) => { const msgs = [...state.messages]; const last = msgs[msgs.length - 1]; if (last && last.isStreaming) last.isStreaming = false; return { messages: msgs }; });
         break;
-
-      case 'session':
-        set({
-          currentSessionId: (event as Record<string, string>).id || null,
-        });
-        break;
-
-      case 'error':
-        console.error('Pi error event:', (event as Record<string, unknown>).error);
-        break;
-
-      case 'compaction_start':
-        // Could show a compaction banner
-        break;
-
-      case 'compaction_end':
-        // Hide compaction banner, refresh stats
-        break;
-
-      case 'auto_retry_start':
-      case 'auto_retry_end':
-        // Could show retry countdown/banner
-        break;
-
-      case 'queue_update':
-        // Could show queue count
-        break;
+      case 'session': set({ currentSessionId: (event as Record<string, string>).id || null }); break;
+      case 'error': console.error('Pi error event:', (event as Record<string, unknown>).error); break;
     }
   },
 
   appendMessage: (msg: Partial<ChatMessage>) => {
-    const fullMsg: ChatMessage = {
-      id: msg.id || crypto.randomUUID(),
-      role: msg.role || 'assistant',
-      content: msg.content || '',
-      timestamp: msg.timestamp || new Date().toISOString(),
-      isStreaming: msg.isStreaming,
-      metadata: msg.metadata,
-    };
-    set((state) => ({
-      messages: [...state.messages, fullMsg],
-    }));
+    set((state) => ({ messages: [...state.messages, { id: msg.id || crypto.randomUUID(), role: msg.role || 'assistant', content: msg.content || '', timestamp: msg.timestamp || new Date().toISOString(), isStreaming: msg.isStreaming, metadata: msg.metadata }] }));
   },
 
   updateLastMessage: (content: string) => {
-    set((state) => {
-      const msgs = [...state.messages];
-      const last = msgs[msgs.length - 1];
-      if (last) {
-        last.content += content;
-      }
-      return { messages: msgs };
-    });
+    set((state) => { const msgs = [...state.messages]; const last = msgs[msgs.length - 1]; if (last) last.content += content; return { messages: msgs }; });
   },
 }));

@@ -1,0 +1,300 @@
+import React, { useState, useEffect } from 'react';
+import { Typography, Collapse, Input, Empty, Popconfirm, Tag, Button, Space, Tooltip, Tabs, message, Checkbox } from 'antd';
+import { DeleteOutlined, SearchOutlined, FolderOutlined, MessageOutlined, RestOutlined, UndoOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import { piListSessionsDetailed, piDeleteSession, piListTrash, piRestoreFromTrash, piPermanentlyDelete, piAutoCleanup } from '../services/piConfigService';
+import type { ProjectGroup, DetailedSessionEntry, TrashEntry } from '../types';
+
+const { Text } = Typography;
+
+function formatDate(ts: string): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const diff = Math.floor((now.getTime() - d.getTime()) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yest';
+  if (diff < 7) return `${diff}d`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatDuration(ms?: number): string {
+  if (!ms) return '';
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h`;
+}
+
+const SessionsPage: React.FC = () => {
+  const [groups, setGroups] = useState<ProjectGroup[]>([]);
+  const [trash, setTrash] = useState<TrashEntry[]>([]);
+  const [search, setSearch] = useState('');
+  const [trashSearch, setTrashSearch] = useState('');
+  const [activeTab, setActiveTab] = useState('sessions');
+  const [selectedTrash, setSelectedTrash] = useState<Set<string>>(new Set());
+
+  const loadSessions = async () => {
+    try {
+      await piAutoCleanup().catch(() => {});
+      const data = await piListSessionsDetailed();
+      setGroups(data);
+    } catch (e) { console.error(e); }
+  };
+
+  const loadTrash = async () => {
+    try {
+      const data = await piListTrash();
+      setTrash(data);
+    } catch (e) { console.error(e); }
+  };
+
+  useEffect(() => {
+    loadSessions();
+    loadTrash();
+  }, []);
+
+  const handleDelete = async (path: string) => {
+    try {
+      await piDeleteSession(path);
+      message.success('Moved to trash');
+      loadSessions();
+      loadTrash();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleRestore = async (trashPath: string) => {
+    try {
+      await piRestoreFromTrash(trashPath);
+      message.success('Restored from trash');
+      loadTrash();
+      loadSessions();
+    } catch (e) { console.error(e); }
+  };
+
+  const handlePermanentDelete = async (trashPath: string) => {
+    try {
+      await piPermanentlyDelete(trashPath);
+      message.success('Permanently deleted');
+      loadTrash();
+    } catch (e) { console.error(e); }
+  };
+
+  // ─── Batch operations ──────────────────────────────────
+
+  const filteredTrash = trash.filter((t) =>
+    !trashSearch || t.fileName.toLowerCase().includes(trashSearch.toLowerCase()) || t.sessionId.toLowerCase().includes(trashSearch.toLowerCase())
+  );
+  const filteredPaths = filteredTrash.map((t) => t.originalPath);
+  const allSelected = filteredPaths.length > 0 && filteredPaths.every((p) => selectedTrash.has(p));
+
+  const toggleSelect = (path: string) => {
+    setSelectedTrash((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedTrash(new Set());
+    } else {
+      setSelectedTrash(new Set(filteredPaths));
+    }
+  };
+
+  const handleBatchRestore = async () => {
+    const selected = Array.from(selectedTrash);
+    let count = 0;
+    for (const path of selected) {
+      try { await piRestoreFromTrash(path); count++; } catch {}
+    }
+    message.success(`Restored ${count} session(s) from trash`);
+    setSelectedTrash(new Set());
+    loadTrash();
+    loadSessions();
+  };
+
+  const handleBatchDelete = async () => {
+    const selected = Array.from(selectedTrash);
+    let count = 0;
+    for (const path of selected) {
+      try { await piPermanentlyDelete(path); count++; } catch {}
+    }
+    message.success(`Permanently deleted ${count} session(s)`);
+    setSelectedTrash(new Set());
+    loadTrash();
+  };
+
+  const filtered = groups.filter((g) =>
+    !search || g.projectName.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const tabItems = [
+    {
+      key: 'sessions',
+      label: <span>Sessions {groups.length > 0 && <Tag style={{ fontSize: 10, marginLeft: 4 }}>{groups.reduce((s, g) => s + g.totalSessions, 0)}</Tag>}</span>,
+      children: (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <Text style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>Sessions</Text>
+            <Input.Search placeholder="Search projects..." value={search}
+              onChange={(e) => setSearch(e.target.value)} style={{ width: 240 }} size="small"
+              prefix={<SearchOutlined style={{ color: 'var(--text-muted)' }} />} />
+          </div>
+          {filtered.length === 0 ? (
+            <Empty description={<span style={{ color: 'var(--text-muted)' }}>No sessions</span>} />
+          ) : (
+            <Collapse ghost expandIconPosition="end" defaultActiveKey={[filtered[0]?.projectPath]} style={{ border: 'none' }}
+              items={filtered.map((group) => ({
+                key: group.projectPath,
+                label: (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 4 }}>
+                    <Space size={6}>
+                      <FolderOutlined style={{ fontSize: 12, color: 'var(--text-muted)' }} />
+                      <Text style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>{group.projectName}</Text>
+                    </Space>
+                    <Space size={6}>
+                      <Tag style={{ fontSize: 10, borderColor: 'var(--border-color)', color: 'var(--text-muted)', background: 'var(--bg-surface)' }}>{group.totalSessions}</Tag>
+                      <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatDate(group.lastActive)}</Text>
+                    </Space>
+                  </div>
+                ),
+                children: (
+                  <div>
+                    {group.sessions.slice(0, 50).map((session) => (
+                      <SessionRow key={session.filePath} session={session} onDelete={handleDelete} />
+                    ))}
+                    {group.sessions.length > 50 && (
+                      <div style={{ padding: '4px 12px 4px 28px' }}>
+                        <Text style={{ color: 'var(--text-muted)', fontSize: 11 }}>+{group.sessions.length - 50} more</Text>
+                      </div>
+                    )}
+                  </div>
+                ),
+              }))}
+            />
+          )}
+        </>
+      ),
+    },
+    {
+      key: 'trash',
+      label: <span><RestOutlined style={{ marginRight: 4 }} />Trash {trash.length > 0 && <Tag style={{ fontSize: 10, marginLeft: 4, background: 'var(--accent-danger-dim)', color: 'var(--accent-danger)', borderColor: 'rgba(255,107,107,0.3)' }}>{trash.length}</Tag>}</span>,
+      children: (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <Text style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Sessions older than 7 days are auto-moved here. Trash auto-clears after 15 days.
+            </Text>
+            <Input.Search placeholder="Search trash..." value={trashSearch}
+              onChange={(e) => setTrashSearch(e.target.value)} style={{ width: 200 }} size="small" />
+          </div>
+
+          {/* Batch action bar */}
+          {selectedTrash.size > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', marginBottom: 8, borderRadius: 8, background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
+              <Checkbox checked={allSelected} indeterminate={selectedTrash.size > 0 && !allSelected} onChange={toggleSelectAll} />
+              <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{selectedTrash.size} selected</Text>
+              <Popconfirm title={`Restore ${selectedTrash.size} session(s)?`} onConfirm={handleBatchRestore} okText="Restore" cancelText="Cancel">
+                <Button size="small" icon={<UndoOutlined />} style={{ color: 'var(--accent-teal)', borderColor: 'var(--accent-teal)' }}>Restore All</Button>
+              </Popconfirm>
+              <Popconfirm title={`Permanently delete ${selectedTrash.size} session(s)?`} onConfirm={handleBatchDelete} okText="Delete All" cancelText="Cancel">
+                <Button size="small" danger icon={<DeleteOutlined />}>Delete All</Button>
+              </Popconfirm>
+            </div>
+          )}
+
+          {filteredTrash.length === 0 ? (
+            <Empty description={<span style={{ color: 'var(--text-muted)' }}>Trash is empty</span>} />
+          ) : (
+            <div>
+              {/* Select all header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 12px 8px 12px', borderBottom: '1px solid var(--border-color)', marginBottom: 4 }}>
+                <Checkbox checked={allSelected} indeterminate={selectedTrash.size > 0 && !allSelected} onChange={toggleSelectAll} />
+                <Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>{allSelected ? 'Deselect all' : 'Select all'}</Text>
+              </div>
+              {filteredTrash.map((entry) => (
+                <TrashRow key={entry.originalPath} entry={entry}
+                  selected={selectedTrash.has(entry.originalPath)}
+                  onToggle={() => toggleSelect(entry.originalPath)}
+                  onRestore={handleRestore} onPermanentDelete={handlePermanentDelete} />
+              ))}
+            </div>
+          )}
+        </>
+      ),
+    },
+  ];
+
+  return (
+    <div style={{ padding: 24, height: '100%', overflow: 'auto' }}>
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} size="small" />
+    </div>
+  );
+};
+
+const SessionRow: React.FC<{ session: DetailedSessionEntry; onDelete: (path: string) => void }> = ({ session, onDelete }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px 6px 28px', margin: '2px 6px', borderRadius: 6, transition: 'all 0.15s', cursor: 'default' }}>
+    <MessageOutlined style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }} />
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <Text style={{ fontSize: 12, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }} title={session.id}>
+        {session.name || session.id.slice(0, 25) + (session.id.length > 25 ? '…' : '')}
+      </Text>
+      <Space size={6} style={{ marginTop: 1 }}>
+        <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+          {session.timestamp ? new Date(session.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+        </Text>
+        <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>{session.messageCount} msgs</Text>
+        {session.provider && session.provider !== 'unknown' && (
+          <Tag style={{ fontSize: 9, borderColor: 'var(--border-color)', color: 'var(--text-muted)', background: 'var(--bg-surface)', lineHeight: '16px', padding: '0 4px' }}>{session.provider}</Tag>
+        )}
+        {session.duration ? <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatDuration(session.duration)}</Text> : null}
+      </Space>
+    </div>
+    <Popconfirm title="Move this session to trash?" onConfirm={() => onDelete(session.filePath)} okText="Trash" cancelText="Cancel">
+      <Tooltip title="Move to trash">
+        <Button type="text" size="small" icon={<DeleteOutlined style={{ fontSize: 11 }} />} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+      </Tooltip>
+    </Popconfirm>
+  </div>
+);
+
+const TrashRow: React.FC<{
+  entry: TrashEntry;
+  selected: boolean;
+  onToggle: () => void;
+  onRestore: (path: string) => void;
+  onPermanentDelete: (path: string) => void;
+}> = ({ entry, selected, onToggle, onRestore, onPermanentDelete }) => {
+  const daysInTrash = entry.trashedAt ? Math.floor((Date.now() - new Date(entry.trashedAt).getTime()) / 86400000) : 0;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px 6px 12px', margin: '2px 6px', borderRadius: 6, border: selected ? '1px solid var(--accent-teal)' : '1px solid var(--border-color)', background: selected ? 'var(--accent-teal-dim)' : 'var(--bg-secondary)', transition: 'all 0.15s' }}>
+      <Checkbox checked={selected} onChange={onToggle} />
+      <ExclamationCircleOutlined style={{ fontSize: 12, color: 'var(--accent-danger)', flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Text style={{ fontSize: 12, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }} title={entry.sessionId}>
+          {entry.sessionName || entry.sessionId.slice(0, 25) + (entry.sessionId.length > 25 ? '…' : '')}
+        </Text>
+        <Space size={6} style={{ marginTop: 1 }}>
+          <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>{entry.fileName}</Text>
+          <Text style={{ fontSize: 10, color: 'var(--accent-danger)' }}>{daysInTrash}d in trash</Text>
+          {entry.messageCount > 0 && <Text style={{ fontSize: 10, color: 'var(--text-muted)' }}>{entry.messageCount} msgs</Text>}
+        </Space>
+      </div>
+      <Space size={4}>
+        <Tooltip title="Restore">
+          <Button type="text" size="small" icon={<UndoOutlined />} onClick={() => onRestore(entry.originalPath)} style={{ color: 'var(--accent-teal)' }} />
+        </Tooltip>
+        <Popconfirm title="Permanently delete? This cannot be undone." onConfirm={() => onPermanentDelete(entry.originalPath)} okText="Delete" cancelText="Cancel">
+          <Tooltip title="Permanently delete">
+            <Button type="text" size="small" icon={<DeleteOutlined />} style={{ color: 'var(--accent-danger)' }} />
+          </Tooltip>
+        </Popconfirm>
+      </Space>
+    </div>
+  );
+};
+
+export default SessionsPage;

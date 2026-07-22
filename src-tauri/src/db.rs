@@ -122,4 +122,32 @@ impl AppDatabase {
             );
         }
     }
+
+    pub fn get_window_state(&self) -> Option<super::pibridge::protocol::WindowGeometry> {
+        let conn = self.conn.lock().ok()?;
+        conn.query_row(
+            "SELECT x, y, w, h, is_maximized FROM window_state WHERE id = 'main'",
+            [],
+            |row| {
+                Ok(super::pibridge::protocol::WindowGeometry {
+                    x: row.get::<_, i32>(0)?,
+                    y: row.get::<_, i32>(1)?,
+                    w: row.get::<_, u32>(2)?,
+                    h: row.get::<_, u32>(3)?,
+                    is_maximized: row.get::<_, i32>(4)? != 0,
+                })
+            },
+        )
+        .ok()
+    }
+
+    pub fn set_window_state(&self, state: &super::pibridge::protocol::WindowGeometry) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO window_state (id, x, y, w, h, is_maximized) VALUES ('main', ?1, ?2, ?3, ?4, ?5)",
+            params![state.x, state.y, state.w, state.h, state.is_maximized as i32],
+        )
+        .map_err(|e| format!("Failed to save window state: {}", e))?;
+        Ok(())
+    }
 }
