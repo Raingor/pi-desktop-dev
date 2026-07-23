@@ -1019,14 +1019,17 @@ pub fn pi_permanently_delete(trash_path: String) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Auto-cleanup: move sessions older than 7 days to trash, purge trash older than 15 days
+/// Auto-cleanup: move sessions older than 15 days to trash, purge trash older than 15 days.
+/// Also restores trash items whose session is younger than 15 days back to sessions
+/// (undoes wrongful trashing from the previous 7-day rule).
 #[tauri::command]
 pub fn pi_auto_cleanup() -> Result<serde_json::Value, String> {
     let now = chrono::Utc::now();
     let mut trashed_count = 0u64;
     let mut purged_count = 0u64;
+    let mut restored_count = 0u64;
 
-    // Phase 1: Move sessions older than 7 days to trash
+    // Phase 1: Move sessions older than 15 days to trash
     let dirs = get_session_dirs();
     for dir in &dirs {
         let files: Vec<_> = match fs::read_dir(dir) {
@@ -1039,7 +1042,7 @@ pub fn pi_auto_cleanup() -> Result<serde_json::Value, String> {
         };
 
         for file_path in &files {
-            // Check if session is older than 7 days
+            // Check if session is older than 15 days
             let content = match fs::read_to_string(file_path) {
                 Ok(c) => c,
                 Err(_) => continue,
@@ -1056,7 +1059,7 @@ pub fn pi_auto_cleanup() -> Result<serde_json::Value, String> {
                 .unwrap_or(now);
             let days_old = (now - session_time).num_days();
 
-            if days_old >= 7 {
+            if days_old >= 15 {
                 if move_to_trash(file_path).is_ok() {
                     trashed_count += 1;
                 }
@@ -1064,8 +1067,61 @@ pub fn pi_auto_cleanup() -> Result<serde_json::Value, String> {
         }
     }
 
-    // Phase 2: Purge trash items older than 15 days
+    // Phase 2: Restore trash items whose session is younger than 15 days back to sessions.
+    // This undoes wrongful trashing from the previous 7-day rule: sessions 7-15 days old
+    // were trashed before but should now remain in sessions.
     let trash = trash_dir();
+    let sessions_dir = pi_agent_dir().join("sessions");
+    fn restore_young_trash(
+        dir: &Path,
+        trash_root: &Path,
+        sessions_dir: &Path,
+        now: &chrono::DateTime<chrono::Utc>,
+        count: &mut u64,
+    ) {
+        if let Ok(reader) = fs::read_dir(dir) {
+            let entries: Vec<_> = reader.flatten().map(|e| e.path()).collect();
+            for path in entries {
+                if path.is_dir() {
+                    restore_young_trash(&path, trash_root, sessions_dir, now, count);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                    // Read session timestamp from first line
+                    let content = match fs::read_to_string(&path) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let first_line = content.lines().next()
+                        .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+                    let ts = first_line
+                        .and_then(|v| v.get("timestamp").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    let parsed = parse_epoch_ms(&ts).unwrap_or(0);
+                    if parsed == 0 { continue; }
+
+                    let session_time = chrono::DateTime::from_timestamp_millis(parsed)
+                        .unwrap_or(*now);
+                    let days_old = (*now - session_time).num_days();
+
+                    // Only restore if session is younger than 15 days (doesn't meet new trash threshold)
+                    if days_old < 15 {
+                        // Compute original path: sessions_dir + relative path within trash
+                        if let Ok(rel) = path.strip_prefix(trash_root) {
+                            let original = sessions_dir.join(rel);
+                            if let Some(parent) = original.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            if fs::rename(&path, &original).is_ok() {
+                                *count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    restore_young_trash(&trash, &trash, &sessions_dir, &now, &mut restored_count);
+
+    // Phase 3: Purge trash items older than 15 days (by file modification time = trashedAt)
     fn purge_old_trash(dir: &Path, now: &chrono::DateTime<chrono::Utc>, count: &mut u64) {
         if let Ok(reader) = fs::read_dir(dir) {
             for entry in reader.flatten() {
@@ -1089,6 +1145,7 @@ pub fn pi_auto_cleanup() -> Result<serde_json::Value, String> {
 
     Ok(serde_json::json!({
         "trashed": trashed_count,
+        "restored": restored_count,
         "purged": purged_count,
     }))
 }

@@ -75,6 +75,17 @@ const AppLayout: React.FC = () => {
               flexShrink: 0,
             }}
           >
+            {/* Drag region for title bar (macOS transparent title bar) */}
+            <div
+              data-tauri-drag-region
+              style={{
+                width: '100%',
+                height: 38,
+                cursor: 'grab',
+                flexShrink: 0,
+                background: 'var(--bg-secondary)',
+              }}
+            />
             <Sidebar />
           </div>
         )}
@@ -89,6 +100,17 @@ const AppLayout: React.FC = () => {
             background: 'var(--bg-primary)',
           }}
         >
+          {/* Drag region for title bar (macOS transparent title bar) */}
+          <div
+            data-tauri-drag-region
+            style={{
+              width: '100%',
+              height: 38,
+              cursor: 'grab',
+              flexShrink: 0,
+              background: 'var(--bg-primary)',
+            }}
+          />
           {/* When sidebar is collapsed in chat view, show a thin expander rail */}
           {!showSecondary && activeView === 'chat' && (
             <div

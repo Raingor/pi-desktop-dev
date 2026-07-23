@@ -1,12 +1,12 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { Button, Typography, Image, Tooltip, Dropdown, Tag, Modal, message } from 'antd';
-import { DownOutlined, SettingOutlined, PaperClipOutlined, ThunderboltOutlined, ReloadOutlined, ExportOutlined, ImportOutlined, CloseOutlined, BulbOutlined, AimOutlined, CompressOutlined, EditOutlined, CheckOutlined, FolderOutlined, FileOutlined, FolderOpenOutlined } from '@ant-design/icons';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { DownOutlined, SettingOutlined, PaperClipOutlined, ThunderboltOutlined, ReloadOutlined, ExportOutlined, ImportOutlined, CloseOutlined, BulbOutlined, AimOutlined, CompressOutlined, EditOutlined, CheckOutlined, FolderOutlined, FileOutlined, FolderOpenOutlined, FilePdfOutlined, CodeOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useAppStore, InputMode } from '../stores/appStore';
 import type { ThinkingLevel, SlashCommand, MentionItem, ProjectGroup } from '../types';
 import { PlusIcon, SendIcon, StopIcon } from './icons';
+import MessageBubble from './MessageBubble';
 import { pickDirectory, listDirectoryFiles } from '../services/piBridge';
 import { piListSessionsDetailed } from '../services/piConfigService';
 
@@ -17,6 +17,55 @@ const MODE_LABELS: Record<InputMode, { color: string; key: string }> = {
   steer: { color: 'var(--accent-amber)', key: 'chatWindow.modeSteer' },
   follow_up: { color: 'var(--accent-purple)', key: 'chatWindow.modeFollowUp' },
 };
+
+// File extensions we can render as code/text previews.
+const CODE_EXTENSIONS = new Set([
+  'js','jsx','ts','tsx','py','rs','go','java','c','cpp','h','hpp','cs','rb','php','swift','kt','scala',
+  'json','yml','yaml','toml','xml','html','css','scss','less','md','txt','sh','bash','zsh','sql','graphql',
+  'vue','svelte','dart','lua','r','pl','vim','conf','ini','env','gitignore','dockerfile','makefile',
+]);
+
+// Maximum file size (in bytes) we'll inline into the prompt — anything larger
+// would blow the context window. 256 KB.
+const MAX_INLINE_FILE_SIZE = 256 * 1024;
+
+// Threshold above which we switch from plain DOM list to virtualized list.
+const VIRTUAL_LIST_THRESHOLD = 50;
+
+type AttachedFileKind = 'image' | 'code' | 'pdf' | 'binary';
+
+interface AttachedFile {
+  name: string;
+  data: string;          // base64 for images/pdf; raw text for code/text
+  kind: AttachedFileKind;
+  size: number;
+  language?: string;     // language hint for code files (e.g. "ts", "py")
+  preview?: string;      // first ~400 chars of text content for code files
+}
+
+function detectFileKind(name: string): AttachedFileKind {
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  if (ext === 'pdf') return 'pdf';
+  if (['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext)) return 'image';
+  if (CODE_EXTENSIONS.has(ext)) return 'code';
+  return 'binary';
+}
+
+function detectLanguage(name: string): string | undefined {
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  // Common mapping; undefined falls back to plain text in the code block.
+  const map: Record<string, string> = {
+    js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx',
+    py: 'python', rs: 'rust', go: 'go', java: 'java',
+    c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', cs: 'csharp',
+    rb: 'ruby', php: 'php', swift: 'swift', kt: 'kotlin',
+    json: 'json', yml: 'yaml', yaml: 'yaml', toml: 'toml',
+    xml: 'xml', html: 'html', css: 'css', scss: 'scss', less: 'less',
+    md: 'markdown', sh: 'bash', bash: 'bash', sql: 'sql',
+    graphql: 'graphql', vue: 'vue', svelte: 'svelte', dart: 'dart', lua: 'lua', r: 'r',
+  };
+  return map[ext];
+}
 
 const THINKING_LEVELS: ThinkingLevel[] = ['none', 'low', 'medium', 'high', 'max'];
 
@@ -93,9 +142,21 @@ const ChatWindow: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [attachedImages, setAttachedImages] = useState<{ name: string; data: string }[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+
+  // Virtualized list: only enabled when message count exceeds the threshold.
+  // Below the threshold, plain DOM rendering is faster and simpler.
+  const useVirtual = messages.length > VIRTUAL_LIST_THRESHOLD;
+  const virtualizer = useVirtualizer({
+    count: useVirtual ? messages.length : 0,
+    getScrollElement: () => messagesScrollRef.current,
+    estimateSize: () => 180,   // rough average; refined via measureElement
+    overscan: 8,
+    enabled: useVirtual,
+  });
 
   // Slash-command ("/") and mention ("@") popup state.
   const [slashOpen, setSlashOpen] = useState(false);
@@ -180,10 +241,15 @@ const ChatWindow: React.FC = () => {
     return items;
   }, [knownProjects, selectedProjectPath, t]);
 
-  // Auto-scroll on new messages
+  // Auto-scroll on new messages (only when user is already near the bottom,
+  // to avoid hijacking scroll during manual review of long histories).
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (useVirtual) {
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end', behavior: 'smooth' });
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, useVirtual, virtualizer]);
 
   // Auto-resize textarea
   const resizeTextarea = useCallback(() => {
@@ -199,6 +265,13 @@ const ChatWindow: React.FC = () => {
 
   useEffect(() => {
     textareaRef.current?.focus();
+  }, []);
+
+  // M9: Focus the input when the global quick-open shortcut fires.
+  useEffect(() => {
+    const focusInput = () => textareaRef.current?.focus();
+    window.addEventListener('pi:focus-chat-input', focusInput);
+    return () => window.removeEventListener('pi:focus-chat-input', focusInput);
   }, []);
 
   // Retry loading models if empty
@@ -218,28 +291,57 @@ const ChatWindow: React.FC = () => {
     }
   }, [piConnected, isStreaming, messages.length, refreshContextUsage]);
 
-  // ─── Drag & drop images ───────────────────────────────────
+  // ─── Drag & drop / file attach (images + code + pdf) ─────
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(true);
   }, []);
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false);
   }, []);
+
+  // Add an arbitrary File to the attachment list. Images and PDFs are read as
+  // base64 data URLs; text/code files are read as plain text so we can inline
+  // them into the prompt as a fenced code block on send.
+  const addFile = useCallback((file: File) => {
+    if (file.size > MAX_INLINE_FILE_SIZE) {
+      message.warning(t('chatWindow.fileTooLarge', { name: file.name }));
+      return;
+    }
+    const kind = detectFileKind(file.name);
+    const reader = new FileReader();
+    if (kind === 'image' || kind === 'pdf') {
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        setAttachedFiles((prev) => [...prev, { name: file.name, data: base64, kind, size: file.size }]);
+      };
+      reader.readAsDataURL(file);
+    } else if (kind === 'code') {
+      reader.onload = () => {
+        const text = String(reader.result || '');
+        setAttachedFiles((prev) => [...prev, {
+          name: file.name,
+          data: text,
+          kind,
+          size: file.size,
+          language: detectLanguage(file.name),
+          preview: text.slice(0, 400),
+        }]);
+      };
+      reader.readAsText(file);
+    } else {
+      // binary — record filename only; will be sent as a placeholder note.
+      setAttachedFiles((prev) => [...prev, { name: file.name, data: '', kind: 'binary', size: file.size }]);
+    }
+  }, [t]);
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false);
     const files = Array.from(e.dataTransfer.files);
-    const imageFiles = files.filter((f) => f.type.startsWith('image/'));
-    for (const file of imageFiles) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = (reader.result as string).split(',')[1];
-        setAttachedImages((prev) => [...prev, { name: file.name, data: base64 }]);
-      };
-      reader.readAsDataURL(file);
-    }
-  }, []);
-  const removeImage = useCallback((name: string) => {
-    setAttachedImages((prev) => prev.filter((img) => img.name !== name));
+    for (const file of files) addFile(file);
+  }, [addFile]);
+
+  const removeFile = useCallback((name: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.name !== name));
   }, []);
 
   // ─── Export dialog state ────────────────────────────────────
@@ -275,9 +377,32 @@ const ChatWindow: React.FC = () => {
       return;
     }
 
-    const imgs = attachedImages.map((img) => img.data);
-    sendMessage(text, imgs.length > 0 ? imgs : undefined);
-    setAttachedImages([]);
+    // Build the outgoing message. Code/text files are inlined as fenced code
+    // blocks so Pi can read them directly; images go through the `images`
+    // field; PDFs and unknown binaries become a one-line reference note
+    // (Pi's prompt command does not currently accept arbitrary binary blobs).
+    let composed = text;
+    const images: string[] = [];
+    const trailingNotes: string[] = [];
+
+    for (const f of attachedFiles) {
+      if (f.kind === 'image') {
+        images.push(f.data);
+      } else if (f.kind === 'code') {
+        const lang = f.language || '';
+        composed += `\n\n\`\`\`${lang}:${f.name}\n${f.data}\n\`\`\``;
+      } else if (f.kind === 'pdf') {
+        trailingNotes.push(`_(Attached PDF: ${f.name}, ${(f.size / 1024).toFixed(1)} KB — Pi cannot read PDFs directly; convert to text or images first.)_`);
+      } else {
+        trailingNotes.push(`_(Attached file: ${f.name}, ${(f.size / 1024).toFixed(1)} KB)_`);
+      }
+    }
+    if (trailingNotes.length > 0) {
+      composed += '\n\n' + trailingNotes.join('\n');
+    }
+
+    sendMessage(composed.trim(), images.length > 0 ? images : undefined);
+    setAttachedFiles([]);
     setSlashOpen(false);
     setMentionOpen(false);
   };
@@ -542,8 +667,12 @@ const ChatWindow: React.FC = () => {
   const currentModelLabel = useMemo(() => {
     if (!availableModels.length) return t('chatWindow.noModel');
     // ZCode-style: show "@provider/modelId" for the active model.
-    if (currentModel?.provider && currentModel?.modelId) {
-      return `@${currentModel.provider}/${currentModel.modelId}`;
+    // Only use currentModel if it actually exists in the available list
+    // (protects against stale/unknown values during startup transitions).
+    const isValid = currentModel?.provider && currentModel?.modelId
+      && availableModels.some((m) => m.provider === currentModel.provider && m.modelId === currentModel.modelId);
+    if (isValid) {
+      return `@${currentModel!.provider}/${currentModel!.modelId}`;
     }
     const first = availableModels[0];
     if (first) return `@${first.provider}/${first.modelId}`;
@@ -767,7 +896,8 @@ const ChatWindow: React.FC = () => {
       )}
 
       {/* Messages */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 0' }}>
+      <div ref={messagesScrollRef} role="log" aria-live="polite" aria-label={t('chatWindow.ariaLog')}
+        style={{ flex: 1, overflowY: 'auto', padding: '20px 0' }}>
         {messages.length === 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 40, userSelect: 'none' }}>
             {/* Pi logo — larger, with glow */}
@@ -839,51 +969,39 @@ const ChatWindow: React.FC = () => {
               ))}
             </div>
           </div>
+        ) : useVirtual ? (
+          // Virtualized list for long histories (≥50 messages).
+          // Uses dynamic measurement so each bubble keeps its natural height.
+          <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 24px', height: '100%', position: 'relative' }}>
+            <div style={{ height: virtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
+              {virtualizer.getVirtualItems().map((vItem) => {
+                const msg = messages[vItem.index];
+                if (!msg) return null;
+                return (
+                  <div
+                    key={msg.id}
+                    data-index={vItem.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${vItem.start}px)`,
+                    }}
+                  >
+                    <MessageBubble msg={msg} index={vItem.index} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         ) : (
+          // Plain list for short histories — avoids virtualizer overhead.
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 24px' }}>
-            {messages.filter(Boolean).map((msg) => {
-              const mode = msg.metadata?.mode as InputMode | undefined;
-              const modeLabel = mode ? MODE_LABELS[mode] : null;
-              return (
-                <div key={msg.id} className={`message-bubble ${msg.role}`} style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                  <div style={{ fontSize: 11, color: msg.role === 'user' ? 'var(--text-muted)' : 'var(--accent-teal)', marginBottom: 6, marginLeft: msg.role === 'assistant' ? 4 : 0, marginRight: msg.role === 'user' ? 4 : 0, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    <span style={{ fontSize: 10, padding: '2px 10px', borderRadius: 4, background: msg.role === 'user' ? 'var(--bg-surface)' : 'var(--accent-teal-dim)', color: msg.role === 'user' ? 'var(--text-secondary)' : 'var(--accent-teal)', border: msg.role === 'user' ? '1px solid var(--border-color)' : '1px solid rgba(0,212,170,0.2)' }}>
-                      {msg.role === 'user' ? t('chatWindow.you') : msg.role === 'assistant' ? t('chatWindow.pi') : msg.role}
-                    </span>
-                    {modeLabel && mode !== 'prompt' && (
-                      <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 3, background: modeLabel.color + '20', color: modeLabel.color, border: `1px solid ${modeLabel.color}40`, textTransform: 'none', letterSpacing: 0 }}>
-                        {t(modeLabel.key)}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ maxWidth: '85%', padding: msg.role === 'user' ? '10px 16px' : '6px 6px', borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : 4, background: msg.role === 'user' ? 'linear-gradient(135deg, rgba(0,212,170,0.12), rgba(0,212,170,0.06))' : 'transparent', border: msg.role === 'user' ? '1px solid rgba(0,212,170,0.15)' : 'none', color: 'var(--text-primary)', lineHeight: 1.7, position: 'relative' }}>
-                    {msg.role === 'assistant' ? (
-                      <div className="markdown-content">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                          code: ({ className, children, ...props }: any) => {
-                            const isInline = !className;
-                            if (isInline) return <code style={{ background: 'var(--bg-surface)', padding: '2px 8px', borderRadius: 4, fontSize: '0.85em', color: 'var(--accent-teal)', border: '1px solid var(--border-color)' }} {...props}>{children}</code>;
-                            return <pre style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: 14, borderRadius: 'var(--radius-md)', overflow: 'auto', fontSize: 13, margin: '10px 0', position: 'relative' }}><code className={className} {...props}>{children}</code></pre>;
-                          },
-                          a: ({ href, children }: any) => <a href={href} style={{ color: 'var(--accent-teal)' }} target="_blank" rel="noopener noreferrer">{children}</a>,
-                          blockquote: ({ children }: any) => <blockquote style={{ borderLeft: '3px solid var(--accent-teal)', padding: '8px 16px', margin: '10px 0', color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderRadius: '0 var(--radius-sm) var(--radius-sm) 0' }}>{children}</blockquote>,
-                        }}>
-                          {msg.content || (msg.isStreaming ? '' : '')}
-                        </ReactMarkdown>
-                        {msg.isStreaming && <span style={{ display: 'inline-block', width: 8, height: 16, background: 'var(--accent-teal)', marginLeft: 2, animation: 'cursor-blink 1s step-end infinite', verticalAlign: 'text-bottom', borderRadius: 1 }} />}
-                      </div>
-                    ) : (
-                      <span style={{ whiteSpace: 'pre-wrap', fontSize: 14, color: 'var(--text-primary)', opacity: 0.9 }}>{msg.content}</span>
-                    )}
-                  </div>
-                  {msg.timestamp && (
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, marginLeft: msg.role === 'assistant' ? 8 : 0, marginRight: msg.role === 'user' ? 8 : 0 }}>
-                      {new Date(msg.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {messages.filter(Boolean).map((msg, i) => (
+              <MessageBubble key={msg.id} msg={msg} index={i} />
+            ))}
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -893,15 +1011,34 @@ const ChatWindow: React.FC = () => {
       <div style={{ padding: '12px 16px 16px', background: 'var(--bg-primary)', borderTop: '1px solid var(--border-color)' }}>
         <div style={{ maxWidth: 760, margin: '0 auto', width: '100%' }}>
 
-          {/* Attached images preview */}
-          {attachedImages.length > 0 && (
+          {/* Attached files preview (images + code/text + pdf) */}
+          {attachedFiles.length > 0 && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-              {attachedImages.map((img) => (
-                <div key={img.name} style={{ position: 'relative', width: 44, height: 44 }}>
-                  <Image src={`data:image/png;base64,${img.data}`} preview={false} style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border-color)' }} />
-                  <Tooltip title={img.name}>
-                    <div onClick={() => removeImage(img.name)} style={{ position: 'absolute', top: -5, right: -5, width: 16, height: 16, borderRadius: '50%', background: 'rgba(0,0,0,0.7)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, cursor: 'pointer', border: '2px solid var(--bg-secondary)' }}>✕</div>
-                  </Tooltip>
+              {attachedFiles.map((f) => (
+                <div key={f.name} style={{ position: 'relative' }}>
+                  {f.kind === 'image' ? (
+                    <div style={{ position: 'relative', width: 44, height: 44 }}>
+                      <Image src={`data:image/png;base64,${f.data}`} preview={false} style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border-color)' }} />
+                      <Tooltip title={f.name}>
+                        <div onClick={() => removeFile(f.name)} style={{ position: 'absolute', top: -5, right: -5, width: 16, height: 16, borderRadius: '50%', background: 'rgba(0,0,0,0.7)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, cursor: 'pointer', border: '2px solid var(--bg-secondary)' }}>✕</div>
+                      </Tooltip>
+                    </div>
+                  ) : (
+                    <Tooltip title={f.kind === 'code' ? (f.preview || f.name) : `${f.name} · ${(f.size / 1024).toFixed(1)} KB`}>
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px 4px 8px',
+                        background: 'var(--bg-surface)', border: '1px solid var(--border-color)',
+                        borderRadius: 8, fontSize: 11, color: 'var(--text-secondary)', maxWidth: 220,
+                        cursor: 'default',
+                      }}>
+                        {f.kind === 'pdf' ? <FilePdfOutlined style={{ color: 'var(--accent-danger)', fontSize: 14 }} />
+                          : f.kind === 'code' ? <CodeOutlined style={{ color: 'var(--accent-purple)', fontSize: 14 }} />
+                          : <FileOutlined style={{ color: 'var(--text-muted)', fontSize: 14 }} />}
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{f.name}</span>
+                        <span onClick={() => removeFile(f.name)} style={{ cursor: 'pointer', color: 'var(--text-muted)', fontSize: 12, padding: '0 2px' }}>✕</span>
+                      </div>
+                    </Tooltip>
+                  )}
                 </div>
               ))}
             </div>
@@ -989,7 +1126,10 @@ const ChatWindow: React.FC = () => {
               value={inputValue}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder={dragOver ? t('chatWindow.dropImages') : (
+              aria-label={t('chatWindow.ariaInput')}
+              aria-multiline="true"
+              aria-disabled={isStreaming || !piConnected}
+              placeholder={dragOver ? t('chatWindow.dropFiles') : (
                 inputMode === 'steer' ? t('chatWindow.inputPlaceholderSteer') :
                 inputMode === 'follow_up' ? t('chatWindow.inputPlaceholderFollowUp') :
                 t('chatWindow.inputPlaceholder')
@@ -1177,27 +1317,21 @@ const ChatWindow: React.FC = () => {
                 </Tooltip>
               </Dropdown>
 
-              {/* Attach images (file picker fallback for non-drag users) */}
-              <Tooltip title={t('chatWindow.attachImage')}>
+              {/* Attach files (images / code / pdf) — file picker fallback for non-drag users */}
+              <Tooltip title={t('chatWindow.attachFile')}>
                 <Button
                   type="text"
                   size="small"
                   icon={<PaperClipOutlined />}
+                  aria-label={t('chatWindow.attachFile')}
                   onClick={() => {
                     const input = document.createElement('input');
                     input.type = 'file';
-                    input.accept = 'image/*';
+                    input.accept = 'image/*,.pdf,.txt,.md,.json,.yml,.yaml,.toml,.js,.jsx,.ts,.tsx,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.cs,.rb,.php,.swift,.kt,.scala,.xml,.html,.css,.scss,.less,.sh,.bash,.zsh,.sql,.graphql,.vue,.svelte,.dart,.lua,.r,.pl';
                     input.multiple = true;
                     input.onchange = () => {
                       const files = Array.from(input.files || []);
-                      for (const file of files) {
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          const base64 = (reader.result as string).split(',')[1];
-                          setAttachedImages((prev) => [...prev, { name: file.name, data: base64 }]);
-                        };
-                        reader.readAsDataURL(file);
-                      }
+                      for (const file of files) addFile(file);
                     };
                     input.click();
                   }}

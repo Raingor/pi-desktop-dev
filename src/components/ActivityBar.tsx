@@ -90,6 +90,17 @@ const ActivityBar: React.FC = () => {
         borderRight: '1px solid var(--border-color)',
       }}
     >
+      {/* Drag region for title bar (macOS transparent title bar) */}
+      <div
+        data-tauri-drag-region
+        style={{
+          width: '100%',
+          height: 38,
+          cursor: 'grab',
+          flexShrink: 0,
+          marginBottom: 4,
+        }}
+      />
       <Tooltip title={piOnline ? t('activityBar.piOnline') : t('activityBar.piOffline')} placement="right">
         <div
           style={{

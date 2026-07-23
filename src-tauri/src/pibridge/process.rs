@@ -49,11 +49,20 @@ impl PiProcess {
     /// Does NOT read stdout — that is done externally via take_stdout + reader thread.
     /// Automatically extends PATH so Node.js scripts find the `node` interpreter.
     pub fn spawn(&mut self, binary_path: &str) -> Result<(), String> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| {
+            format!("/Users/{}", std::env::var("USER").unwrap_or_else(|_| "root".to_string()))
+        });
+
+        log::info!("[pi spawn] binary_path={}, HOME={}, PATH={}", binary_path, &home, Self::pi_path());
+
         let mut child = Command::new(binary_path)
             .arg("--mode")
             .arg("rpc")
             .env("PATH", Self::pi_path())
+            .env("HOME", &home)
+            .env("USER", std::env::var("USER").unwrap_or_else(|_| "root".to_string()))
             .env_remove("NODE_OPTIONS")
+            .current_dir(&home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -62,11 +71,26 @@ impl PiProcess {
 
         let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
         let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+        let stderr = child.stderr.take();
 
         self.stdin = Some(stdin);
         self.stdout = Some(stdout);
         self.child = Some(child);
         self.stop_reader.store(false, Ordering::SeqCst);
+
+        // Spawn a stderr reader thread to log pi's stderr output for debugging
+        if let Some(stderr) = stderr {
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                let reader = std::io::BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => log::warn!("[pi stderr] {}", l),
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
 
         Ok(())
     }

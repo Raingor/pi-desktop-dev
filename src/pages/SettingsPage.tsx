@@ -11,7 +11,7 @@ const { Text, Title } = Typography;
 const SettingsPage: React.FC = () => {
   const { t } = useTranslation();
   const {
-    settings: piSettings, allProviders, allModels, initialized, init,
+    settings: piSettings, allProviders, allModels, initialized, init, auth,
     updateSettings, setProviderAuth, removeProviderAuth, importConfig, resetToDefaults,
     addCustomProvider, removeCustomProvider,
     addCustomModel, updateCustomModel, removeCustomModel,
@@ -19,6 +19,18 @@ const SettingsPage: React.FC = () => {
   const { settings: appSettings, updateSettings: updateAppSettings } = useAppStore();
   const [newPackage, setNewPackage] = useState('');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (auth) {
+      const saved: Record<string, string> = {};
+      for (const [id, a] of Object.entries(auth)) {
+        if (a.type === 'api_key' && a.key) {
+          saved[id] = a.key;
+        }
+      }
+      setApiKeys(saved);
+    }
+  }, [auth]);
   const [showReset, setShowReset] = useState(false);
 
   // Manage Models panel state.
@@ -174,13 +186,14 @@ const SettingsPage: React.FC = () => {
         <SettingRow label={t('settingsPage.theme')}>
           <Select
             value={appSettings.theme}
-            onChange={(value) => updateAppSettings({ theme: value as 'light' | 'dark' | 'system' })}
+            onChange={(value) => updateAppSettings({ theme: value as 'light' | 'dark' | 'system' | 'high-contrast' })}
             size="small"
-            style={{ width: 140 }}
+            style={{ width: 160 }}
             options={[
               { value: 'light', label: t('settingsPage.light') },
               { value: 'dark', label: t('settingsPage.dark') },
               { value: 'system', label: t('settingsPage.system') },
+              { value: 'high-contrast', label: t('settingsPage.highContrast') },
             ]}
           />
         </SettingRow>
@@ -361,18 +374,30 @@ const SettingsPage: React.FC = () => {
       <DividerLine />
 
       <Section title={t('settingsPage.apiKeys')}>
-        {allProviders.filter((p) => p.hasAuth).map((p) => (
-          <SettingRow key={p.id} label={p.name}>
-            <Space size={8}>
-              <Input.Password size="small" placeholder={t('settingsPage.enterApiKey')} value={apiKeys[p.id] ?? ''}
-                onChange={(e) => setApiKeys({ ...apiKeys, [p.id]: e.target.value })}
-                style={{ width: 200 }} />
-              <Button size="small" type="primary" onClick={() => { setProviderAuth(p.id, apiKeys[p.id]); message.success(t('settingsPage.keySaved')); }}
-                style={{ background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f' }}>{t('common.save')}</Button>
-              <Button size="small" danger onClick={() => { removeProviderAuth(p.id); setApiKeys({ ...apiKeys, [p.id]: '' }); }}>{t('common.clear')}</Button>
-            </Space>
-          </SettingRow>
-        ))}
+        {allProviders.filter((p) => p.hasAuth).map((p) => {
+          const hasKey = !!apiKeys[p.id];
+          return (
+            <SettingRow key={p.id} label={
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {p.name}
+                {hasKey && (
+                  <Tag color="green" style={{ margin: 0, fontSize: 11, padding: '0 6px', lineHeight: '18px', height: 18 }}>
+                    ✓ {t('settingsPage.keyFilled')}
+                  </Tag>
+                )}
+              </span>
+            }>
+              <Space size={8}>
+                <Input.Password size="small" placeholder={t('settingsPage.enterApiKey')} value={apiKeys[p.id] ?? ''}
+                  onChange={(e) => setApiKeys({ ...apiKeys, [p.id]: e.target.value })}
+                  style={{ width: 200 }} />
+                <Button size="small" type="primary" onClick={() => { setProviderAuth(p.id, apiKeys[p.id]); message.success(t('settingsPage.keySaved')); }}
+                  style={{ background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f' }}>{t('common.save')}</Button>
+                <Button size="small" danger onClick={() => { removeProviderAuth(p.id); setApiKeys({ ...apiKeys, [p.id]: '' }); }}>{t('common.clear')}</Button>
+              </Space>
+            </SettingRow>
+          );
+        })}
       </Section>
 
       <DividerLine />

@@ -179,6 +179,10 @@ impl PiBridge {
                                 continue;
                             }
 
+                            // Log first 200 chars of each line for debugging
+                            let log_preview = &trimmed[..trimmed.len().min(200)];
+                            log::info!("[pi stdout] {}", log_preview);
+
                             if let Some(val) = jsonl::parse_line(&trimmed) {
                                 // Check if this is a response (has id) and we have a pending channel
                                 if jsonl::is_response(&val) {
@@ -259,6 +263,72 @@ impl PiBridge {
         }));
 
         Ok(())
+    }
+
+    /// Send an RPC command and wait for the response, without holding the bridge lock.
+    /// Takes the process and pending_responses Arcs directly so callers can release
+    /// the bridge Mutex before waiting (which can take up to `timeout_secs`).
+    /// This prevents fire-and-forget commands (pi_prompt, etc.) from being blocked
+    /// while an RPC command is waiting for a response.
+    pub fn send_cmd_and_wait_unlocked(
+        process: &Arc<Mutex<process::PiProcess>>,
+        pending: &Arc<Mutex<HashMap<String, mpsc::Sender<serde_json::Value>>>>,
+        cmd_type: &str,
+        params: Option<serde_json::Value>,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+
+        // Register response channel
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut map = pending.lock().map_err(|e| e.to_string())?;
+            map.insert(id.clone(), tx);
+        }
+
+        let cmd = protocol::RpcCommand {
+            id: Some(id.clone()),
+            cmd_type: cmd_type.to_string(),
+            params,
+        };
+
+        // Send command (briefly holds process lock only)
+        {
+            let mut p = process.lock().map_err(|e| e.to_string())?;
+            let json = jsonl::encode_command(&cmd);
+            p.send_command(&json)?;
+        } // process lock released
+
+        // Wait for response without holding any lock
+        match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+            Ok(response) => {
+                if response
+                    .get("success")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false)
+                {
+                    Ok(response
+                        .get("data")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null))
+                } else {
+                    let err = response
+                        .get("error")
+                        .and_then(|e| e.as_str())
+                        .unwrap_or("Unknown error")
+                        .to_string();
+                    Err(err)
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = pending.lock().map(|mut m| m.remove(&id));
+                Err(format!(
+                    "Command '{}' timed out after {}s",
+                    cmd_type, timeout_secs
+                ))
+            }
+            Err(_) => Err(format!("Command '{}' failed: channel closed", cmd_type)),
+        }
     }
 
     /// Track the last session file path (called on switch_session success).

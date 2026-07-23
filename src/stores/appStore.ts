@@ -213,19 +213,22 @@ function extractDelta(event: PiEvent): string | null {
 async function resolveDefaultModel(): Promise<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel } | null> {
   try {
     const state = await pi.piGetState() as any;
-    // pi's get_state returns { model: { id, provider, ... }, thinkingLevel, ... }.
+    // pi's get_state returns { model: { id, provider, thinkingLevel, ... }, ... }.
     // NOTE: the model identifier field is `id`, not `modelId`.
+    // NOTE: thinkingLevel is nested under model, not at the top level.
     const provider = state?.model?.provider;
     const modelId = state?.model?.id || state?.model?.modelId;
-    if (provider && modelId) {
-      const thinkingLevel = state?.thinkingLevel as ThinkingLevel | undefined;
+    // Validate: skip placeholder values like "unknown" should not be treated as a real model
+    if (provider && modelId && provider !== 'unknown' && modelId !== 'unknown') {
+      const thinkingLevel = state?.model?.thinkingLevel as ThinkingLevel | undefined;
       return { provider, modelId, thinkingLevel };
     }
   } catch { /* fall through to settings.json */ }
   try {
     const s = await piCfg.piReadSettings() as any;
     if (s?.defaultProvider && s?.defaultModel) {
-      return { provider: s.defaultProvider, modelId: s.defaultModel };
+      const thinkingLevel = s?.defaultThinkingLevel as ThinkingLevel | undefined;
+      return { provider: s.defaultProvider, modelId: s.defaultModel, thinkingLevel };
     }
   } catch { /* no default available */ }
   return null;
@@ -303,7 +306,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to initialize:', e);
-      set({ bootstrapped: true, piMissing: true });
+      // Only mark as missing if bootstrap explicitly reports empty binary path.
+      // Other errors (deadlock, timeout) should allow retry.
+      set({ bootstrapped: true });
     }
   },
 
@@ -490,24 +495,62 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadAvailableModels: async () => {
+    // Step 1: Always load enabledModels from settings.json first.
+    // This is reliable (no subprocess dependency) and guarantees the dropdown
+    // shows the user's configured models immediately, even if the pi RPC
+    // subprocess is still starting up or returns empty.
     try {
-      const result = await pi.piGetAvailableModels();
-      if (result && Array.isArray(result)) {
-        set({ availableModels: result as ProviderModel[] });
-      } else if (result && typeof result === 'object') {
-        const data = result as Record<string, unknown>;
-        if (Array.isArray(data.models)) {
-          // Pi RPC returns {models: [{id, name, provider, ...}]} - map to ProviderModel format
-          const mapped = (data.models as any[]).map((m: any) => ({
-            provider: m.provider || '',
-            modelId: m.id || '',
-            label: m.name || m.id || '',
-          }));
-          set({ availableModels: mapped });
+      const s = await piCfg.piReadSettings() as any;
+      const enabled: string[] = s?.enabledModels || [];
+      if (enabled.length > 0) {
+        const mapped: ProviderModel[] = enabled.map((entry: string) => {
+          const [provider, modelId] = entry.split('/');
+          return { provider: provider || '', modelId: modelId || '', label: modelId || entry };
+        });
+        set({ availableModels: mapped });
+        // Ensure currentModel is valid: if not set or not in the list,
+        // pick the default from settings.json or the first enabled model.
+        const cur = get().currentModel;
+        const isValid = cur && mapped.some((m) => m.provider === cur.provider && m.modelId === cur.modelId);
+        if (!isValid) {
+          const defaultProvider = s?.defaultProvider;
+          const defaultModel = s?.defaultModel;
+          const defaultMatch = mapped.find((m) => m.provider === defaultProvider && m.modelId === defaultModel);
+          const pick = defaultMatch || mapped[0];
+          set({ currentModel: { provider: pick.provider, modelId: pick.modelId } });
         }
       }
     } catch (e) {
-      console.error('Failed to load models:', e);
+      console.warn('Failed to read enabledModels from settings.json:', e);
+    }
+
+    // Step 2: Refresh from pi RPC in the background.
+    // The RPC may return a larger catalog (all available models, not just enabled).
+    // If it succeeds, we merge any models not already in the list.
+    try {
+      const result = await pi.piGetAvailableModels();
+      let rpcModels: ProviderModel[] = [];
+      if (Array.isArray(result)) {
+        rpcModels = result as ProviderModel[];
+      } else if (result && typeof result === 'object' && Array.isArray((result as any).models)) {
+        rpcModels = (result as any).models.map((m: any) => ({
+          provider: m.provider || '',
+          modelId: m.id || '',
+          label: m.name || m.id || '',
+        }));
+      }
+
+      if (rpcModels.length > 0) {
+        // Merge: keep existing (settings.json) models, append any new RPC models.
+        // This way enabled models appear first, followed by the full catalog.
+        const existing = get().availableModels;
+        const existingKeys = new Set(existing.map((m) => `${m.provider}/${m.modelId}`));
+        const merged = [...existing, ...rpcModels.filter((m) => !existingKeys.has(`${m.provider}/${m.modelId}`))];
+        set({ availableModels: merged });
+      }
+    } catch (e) {
+      // RPC failed — settings.json models (loaded in step 1) remain. Non-fatal.
+      console.warn('pi_get_available_models RPC failed (using settings.json models):', e);
     }
   },
 
@@ -672,12 +715,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ agentPhase: 'observing' });
         break;
       case 'message_start': {
-        const msgId = (e.message as Record<string, unknown>)?.id as string || crypto.randomUUID();
-        set((state) => ({
-          messages: [...state.messages, { id: msgId, role: 'assistant', content: '', timestamp: new Date().toISOString(), isStreaming: true }],
-          isStreaming: true,
-          agentPhase: 'thinking',
-        }));
+        const msg = e.message as Record<string, unknown> | undefined;
+        const role = msg?.role as string | undefined;
+        // Pi emits message_start for both user and assistant messages.
+        // Only create a new message bubble for assistant messages;
+        // user messages are already added optimistically by sendMessage().
+        if (role !== 'assistant') break;
+        const msgId = msg?.id as string || crypto.randomUUID();
+        set((state) => {
+          // Avoid duplicate: if last message is already an empty streaming assistant message, don't add another
+          const last = state.messages[state.messages.length - 1];
+          if (last && last.role === 'assistant' && last.isStreaming && !last.content) {
+            return { isStreaming: true, agentPhase: 'thinking' };
+          }
+          return {
+            messages: [...state.messages, { id: msgId, role: 'assistant', content: '', timestamp: new Date().toISOString(), isStreaming: true }],
+            isStreaming: true,
+            agentPhase: 'thinking',
+          };
+        });
         break;
       }
       case 'message_update': case 'text_delta':
@@ -701,7 +757,33 @@ export const useAppStore = create<AppState>((set, get) => ({
         break;
       case 'error':
         console.error('Pi error event:', e.error);
+        set({ isStreaming: false, agentPhase: 'idle' });
         break;
+      // Pi returns error responses (type: "response", success: false) for failed
+      // prompt/steer/follow_up commands. Since these commands are fire-and-forget
+      // (no pending response channel), the error response is emitted as an event.
+      // We must handle it here to reset isStreaming and show the error to the user.
+      case 'response': {
+        const success = e.success as boolean | undefined;
+        if (success === false) {
+          const errorMsg = (e.error as string) || (e.errorMessage as string) || 'Unknown error';
+          console.error('Pi command error response:', errorMsg);
+          set((state) => {
+            const msgs = [...state.messages];
+            const last = msgs[msgs.length - 1];
+            // If there's an empty streaming assistant message, replace it with the error
+            if (last && last.role === 'assistant' && last.isStreaming && !last.content) {
+              last.content = `⚠️ ${errorMsg}`;
+              last.isStreaming = false;
+            } else if (!last || last.role !== 'assistant' || !last.isStreaming) {
+              // No streaming assistant message — add an error message
+              msgs.push({ id: crypto.randomUUID(), role: 'assistant', content: `⚠️ ${errorMsg}`, timestamp: new Date().toISOString(), isStreaming: false });
+            }
+            return { messages: msgs, isStreaming: false, agentPhase: 'idle' };
+          });
+        }
+        break;
+      }
       // M3: queue events — Pi emits the full pending queues on every change.
       case 'queue_update': {
         // Payload: { steering: string[]; followUp: string[] }
@@ -772,7 +854,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updateLastMessage: (content: string) => {
-    set((state) => { const msgs = [...state.messages]; const last = msgs[msgs.length - 1]; if (last) last.content += content; return { messages: msgs }; });
+    set((state) => {
+      const msgs = [...state.messages];
+      const last = msgs[msgs.length - 1];
+      // Only append to an existing assistant streaming message.
+      // If the last message is not an assistant streaming message (e.g., it's the
+      // user's message because message_start for assistant hasn't arrived yet),
+      // create a new assistant message to hold the streaming content.
+      if (last && last.role === 'assistant' && last.isStreaming) {
+        last.content += content;
+      } else {
+        msgs.push({ id: crypto.randomUUID(), role: 'assistant', content, timestamp: new Date().toISOString(), isStreaming: true });
+      }
+      return { messages: msgs };
+    });
   },
 
   // ─── M8: Export / Import ───────────────────────────────────

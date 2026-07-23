@@ -9,7 +9,7 @@ import './i18n';
 import i18n from './i18n';
 
 const App: React.FC = () => {
-  const { settings, initialize, handlePiEvent, unreadCount, markAllRead } = useAppStore();
+  const { settings, initialize, handlePiEvent, unreadCount, markAllRead, newSession, setActiveView, piConnected, piMissing } = useAppStore();
   const { initialized: piConfigInitialized, init: initPiConfig } = usePiConfigStore();
   const lastNotifiedMsgId = useRef<string | null>(null);
 
@@ -26,6 +26,13 @@ const App: React.FC = () => {
 
     const unlistenEvent = onPiEvent((event) => {
       handlePiEvent(event);
+
+      // M9: Global shortcut Ctrl+Shift+Space — focus the chat input
+      if (event.type === 'global_quick_open') {
+        useAppStore.getState().setActiveView('chat');
+        window.dispatchEvent(new CustomEvent('pi:focus-chat-input'));
+        return;
+      }
 
       // M7: Desktop notification on new assistant message_end if window not focused
       if (event.type === 'message_end' && !isFocused) {
@@ -55,6 +62,22 @@ const App: React.FC = () => {
     setTrayBadge(unreadCount).catch(() => {});
   }, [unreadCount]);
 
+  // Auto-reconnect: if pi is not connected and not marked as missing,
+  // periodically retry bootstrap. This handles timing issues where
+  // initialize() runs before the Rust setup thread has spawned pi,
+  // or when HMR resets the store state.
+  useEffect(() => {
+    if (piMissing) return; // Binary truly not found, no point retrying
+    if (piConnected) return; // Already connected
+    const timer = setInterval(() => {
+      const s = useAppStore.getState();
+      if (!s.piConnected && !s.piMissing) {
+        s.initialize();
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [piConnected, piMissing]);
+
   // Initialize pi config store
   useEffect(() => {
     if (!piConfigInitialized) {
@@ -64,7 +87,7 @@ const App: React.FC = () => {
 
   // Determine whether dark mode is active
   const isDark = useMemo(() => {
-    if (settings.theme === 'dark') return true;
+    if (settings.theme === 'dark' || settings.theme === 'high-contrast') return true;
     if (settings.theme === 'light') return false;
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   }, [settings.theme]);
@@ -72,7 +95,10 @@ const App: React.FC = () => {
   // Apply data-theme attribute to root element
   useEffect(() => {
     const root = document.documentElement;
-    const themeAttr = settings.theme === 'system' ? 'system' : isDark ? 'dark' : 'light';
+    const themeAttr =
+      settings.theme === 'high-contrast' ? 'high-contrast'
+      : settings.theme === 'system' ? 'system'
+      : isDark ? 'dark' : 'light';
     root.setAttribute('data-theme', themeAttr);
   }, [settings.theme, isDark]);
 
@@ -95,9 +121,40 @@ const App: React.FC = () => {
     }
   }, [settings.language]);
 
+  // M9: Keyboard navigation — Cmd/Ctrl+K (search sessions),
+  // Cmd/Ctrl+N (new session), Cmd/Ctrl+, (open settings).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      // Cmd/Ctrl+K → jump to Sessions view (quick search)
+      if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        setActiveView('sessions');
+        // Notify SessionsPage to focus its search input (after view mounts)
+        window.dispatchEvent(new CustomEvent('pi:cmdk-focus-search'));
+        return;
+      }
+      // Cmd/Ctrl+N → new chat session
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        newSession().catch(() => {});
+        return;
+      }
+      // Cmd/Ctrl+, → open settings
+      if (e.key === ',') {
+        e.preventDefault();
+        setActiveView('settings');
+        return;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [newSession, setActiveView]);
+
   // Determine the Ant Design theme algorithm
   const getAlgorithm = () => {
-    if (settings.theme === 'dark') return theme.darkAlgorithm;
+    if (settings.theme === 'dark' || settings.theme === 'high-contrast') return theme.darkAlgorithm;
     if (settings.theme === 'light') return theme.defaultAlgorithm;
     return window.matchMedia('(prefers-color-scheme: dark)').matches
       ? theme.darkAlgorithm

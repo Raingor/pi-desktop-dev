@@ -10,11 +10,14 @@ const PiStatusBar: React.FC = () => {
     piMissing,
     piVersion,
     currentModel,
+    availableModels,
     currentSessionId,
     messages,
   } = useAppStore();
 
   const piOnline = piConnected && !piMissing;
+  const hasValidModel = currentModel?.provider && currentModel?.modelId
+    && availableModels.some((m) => m.provider === currentModel.provider && m.modelId === currentModel.modelId);
 
   return (
     <div
@@ -48,7 +51,7 @@ const PiStatusBar: React.FC = () => {
         </div>
 
         {/* Model info */}
-        {currentModel && piOnline && (
+        {hasValidModel && piOnline && (
           <span style={{
             opacity: 0.7,
             fontSize: 11,

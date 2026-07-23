@@ -23,7 +23,7 @@ export async function piGetUsageByRange(fromDate: string, toDate: string): Promi
 export async function piListTrash(): Promise<TrashEntry[]> { return invoke('pi_list_trash'); }
 export async function piRestoreFromTrash(trashPath: string): Promise<boolean> { return invoke('pi_restore_from_trash', { trashPath }); }
 export async function piPermanentlyDelete(trashPath: string): Promise<boolean> { return invoke('pi_permanently_delete', { trashPath }); }
-export async function piAutoCleanup(): Promise<{ trashed: number; purged: number }> { return invoke('pi_auto_cleanup'); }
+export async function piAutoCleanup(): Promise<{ trashed: number; restored: number; purged: number }> { return invoke('pi_auto_cleanup'); }
 
 // ─── Rename session ────────────────────────────────────────────
 export async function piRenameSession(path: string, newName: string): Promise<void> {

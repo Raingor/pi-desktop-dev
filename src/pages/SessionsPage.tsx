@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Typography, Collapse, Input, Empty, Popconfirm, Tag, Button, Space, Tooltip, Tabs, message, Checkbox } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { DeleteOutlined, SearchOutlined, FolderOutlined, MessageOutlined, RestOutlined, UndoOutlined, ExclamationCircleOutlined, ImportOutlined, ReloadOutlined } from '@ant-design/icons';
@@ -47,6 +47,21 @@ const SessionsPage: React.FC = () => {
   const { externalSessions, loadExternalSessions, importExternalSession } = useAppStore();
   const [importing, setImporting] = useState<string | null>(null);
   const [importSearch, setImportSearch] = useState('');
+
+  // Ref to the project search input — focused when Cmd/Ctrl+K is pressed.
+  const searchInputRef = useRef<any>(null);
+  useEffect(() => {
+    const focusSearch = () => {
+      // Slight delay so the view has time to mount if just switched into.
+      setTimeout(() => {
+        searchInputRef.current?.focus?.();
+        const input = searchInputRef.current?.input as HTMLInputElement | undefined;
+        input?.select?.();
+      }, 50);
+    };
+    window.addEventListener('pi:cmdk-focus-search', focusSearch);
+    return () => window.removeEventListener('pi:cmdk-focus-search', focusSearch);
+  }, []);
 
   const loadSessions = async () => {
     try {
@@ -175,7 +190,7 @@ const SessionsPage: React.FC = () => {
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <Text style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{t('sessions.sessions')}</Text>
-            <Input.Search placeholder={t('sessions.searchProjects')} value={search}
+            <Input.Search ref={searchInputRef} placeholder={t('sessions.searchProjects')} value={search}
               onChange={(e) => setSearch(e.target.value)} style={{ width: 240 }} size="small"
               prefix={<SearchOutlined style={{ color: 'var(--text-muted)' }} />} />
           </div>

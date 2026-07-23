@@ -45,7 +45,7 @@ export interface SessionEntry {
 }
 
 export interface AppSettings {
-  theme: 'light' | 'dark' | 'system';
+  theme: 'light' | 'dark' | 'system' | 'high-contrast';
   font_size: number;
   window_geometry?: WindowGeometry;
   trusted_cwds: string[];

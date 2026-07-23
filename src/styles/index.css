@@ -58,6 +58,53 @@
   --sidebar-indicator: #00b892;
 }
 
+/* ─── High-Contrast Theme (WCAG AAA accessibility) ─────── */
+/* Dark-based high-contrast palette: pure black background, pure white text,
+   strong borders, and saturated accents that meet 7:1 contrast ratio. */
+[data-theme="high-contrast"] {
+  --bg-primary: #000000;
+  --bg-secondary: #000000;
+  --bg-surface: #0a0a0a;
+  --bg-surface-hover: #1a1a1a;
+  --bg-elevated: #141414;
+  --border-color: #ffffff;
+  --border-light: #cccccc;
+  --text-primary: #ffffff;
+  --text-secondary: #f0f0f0;
+  --text-muted: #d0d0d0;
+  --accent-teal: #00ffcc;
+  --accent-teal-dim: rgba(0, 255, 204, 0.25);
+  --accent-teal-glow: rgba(0, 255, 204, 0.5);
+  --accent-purple: #b59eff;
+  --accent-purple-dim: rgba(181, 158, 255, 0.25);
+  --accent-danger: #ff8585;
+  --accent-danger-dim: rgba(255, 133, 133, 0.25);
+  --accent-amber: #ffd166;
+  --gradient-bar: linear-gradient(135deg, #00ffcc 0%, #b59eff 100%);
+  --gradient-glow: linear-gradient(135deg, rgba(0, 255, 204, 0.6), rgba(181, 158, 255, 0.6));
+  --shadow-glow: 0 0 24px rgba(0, 255, 204, 0.3);
+  --shadow-card: 0 0 0 1px #ffffff, 0 4px 24px rgba(0, 0, 0, 0.8);
+  --sidebar-indicator: #00ffcc;
+}
+
+/* High-contrast emphasis: thicker borders, stronger focus rings */
+[data-theme="high-contrast"] .markdown-content pre,
+[data-theme="high-contrast"] .markdown-content blockquote,
+[data-theme="high-contrast"] .markdown-content table th,
+[data-theme="high-contrast"] .markdown-content table td {
+  border-width: 2px !important;
+}
+
+[data-theme="high-contrast"] .markdown-content a {
+  text-decoration: underline;
+  border-bottom: none;
+}
+
+[data-theme="high-contrast"] *:focus-visible {
+  outline: 3px solid #00ffcc !important;
+  outline-offset: 2px !important;
+}
+
 /* Follow system preference */
 @media (prefers-color-scheme: light) {
   [data-theme="system"] {

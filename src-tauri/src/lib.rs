@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tauri::{Emitter, Manager, State, Listener};
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState, GlobalShortcutExt};
 
 use pibridge::PiBridge;
 use pibridge::protocol::*;
@@ -48,7 +49,16 @@ async fn pi_prompt(
     message: String,
     images: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    log::info!("[pi_prompt] called, message length: {}", message.len());
+    // Clone the process Arc and release the bridge lock immediately.
+    // This prevents deadlock when an RPC command (e.g. pi_get_available_models)
+    // is holding the bridge lock while waiting for a response — pi_prompt is
+    // fire-and-forget and must not block on the bridge lock.
+    let process = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        bridge.process.clone()
+    }; // Bridge lock released
+
     let mut cmd = serde_json::json!({
         "type": "prompt",
         "id": uuid::Uuid::new_v4().to_string(),
@@ -60,8 +70,14 @@ async fn pi_prompt(
         }
     }
     let json = jsonl::encode_command_data(&cmd);
-    let mut process = bridge.process.lock().map_err(|e| e.to_string())?;
-    process.send_command(&json)
+    log::info!("[pi_prompt] sending command to pi, json length: {}", json.len());
+    let mut p = process.lock().map_err(|e| e.to_string())?;
+    let result = p.send_command(&json);
+    match &result {
+        Ok(()) => log::info!("[pi_prompt] command sent successfully"),
+        Err(e) => log::error!("[pi_prompt] failed to send command: {}", e),
+    }
+    result
 }
 
 #[tauri::command]
@@ -70,7 +86,10 @@ async fn pi_steer(
     message: String,
     images: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let process = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        bridge.process.clone()
+    }; // Bridge lock released
     let mut cmd = serde_json::json!({
         "type": "steer",
         "id": uuid::Uuid::new_v4().to_string(),
@@ -82,8 +101,8 @@ async fn pi_steer(
         }
     }
     let json = jsonl::encode_command_data(&cmd);
-    let mut process = bridge.process.lock().map_err(|e| e.to_string())?;
-    process.send_command(&json)
+    let mut p = process.lock().map_err(|e| e.to_string())?;
+    p.send_command(&json)
 }
 
 #[tauri::command]
@@ -92,7 +111,10 @@ async fn pi_follow_up(
     message: String,
     images: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let process = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        bridge.process.clone()
+    }; // Bridge lock released
     let mut cmd = serde_json::json!({
         "type": "follow_up",
         "id": uuid::Uuid::new_v4().to_string(),
@@ -104,23 +126,26 @@ async fn pi_follow_up(
         }
     }
     let json = jsonl::encode_command_data(&cmd);
-    let mut process = bridge.process.lock().map_err(|e| e.to_string())?;
-    process.send_command(&json)
+    let mut p = process.lock().map_err(|e| e.to_string())?;
+    p.send_command(&json)
 }
 
 #[tauri::command]
 async fn pi_abort(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let process = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        bridge.process.clone()
+    }; // Bridge lock released
     let cmd = pibridge::protocol::RpcCommand {
         id: Some(uuid::Uuid::new_v4().to_string()),
         cmd_type: "abort".to_string(),
         params: None,
     };
     let json = jsonl::encode_command(&cmd);
-    let mut process = bridge.process.lock().map_err(|e| e.to_string())?;
-    process.send_command(&json)
+    let mut p = process.lock().map_err(|e| e.to_string())?;
+    p.send_command(&json)
 }
 
 /// Cancel an in-progress auto-retry backoff (from the retry banner's Cancel button).
@@ -128,23 +153,29 @@ async fn pi_abort(
 async fn pi_abort_retry(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let process = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        bridge.process.clone()
+    }; // Bridge lock released
     let cmd = pibridge::protocol::RpcCommand {
         id: Some(uuid::Uuid::new_v4().to_string()),
         cmd_type: "abort_retry".to_string(),
         params: None,
     };
     let json = jsonl::encode_command(&cmd);
-    let mut process = bridge.process.lock().map_err(|e| e.to_string())?;
-    process.send_command(&json)
+    let mut p = process.lock().map_err(|e| e.to_string())?;
+    p.send_command(&json)
 }
 
 #[tauri::command]
 async fn pi_new_session(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
-    let data = bridge.send_cmd_and_wait("new_session", None, 30)?;
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
+    let data = PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "new_session", None, 30)?;
     Ok(data)
 }
 
@@ -152,19 +183,24 @@ async fn pi_new_session(
 async fn pi_get_state(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
-    bridge.send_cmd_and_wait("get_state", None, 30)
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
+    PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "get_state", None, 30)
 }
 
 #[tauri::command]
 async fn pi_get_messages(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
     // Short timeout: history is normally rendered from the local session file
-    // (see loadMessages); this RPC is only a best-effort fallback, so we must not
-    // hold the global bridge lock long enough to stall other commands.
-    match bridge.send_cmd_and_wait("get_messages", None, 6) {
+    // (see loadMessages); this RPC is only a best-effort fallback.
+    match PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "get_messages", None, 6) {
         Ok(data) => Ok(data),
         Err(e) => {
             log::warn!("get_messages RPC failed: {}; trying local file read", e);
@@ -203,9 +239,37 @@ async fn pi_read_session_file(
 #[tauri::command]
 async fn pi_get_available_models(
     state: State<'_, AppState>,
+    _app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
-    bridge.send_cmd_and_wait("get_available_models", None, 30)
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
+    let result = PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "get_available_models", None, 30);
+    match &result {
+        Ok(v) => {
+            // Extract only essential fields to keep IPC payload small.
+            // The full response includes cost/compat/contextWindow for each model
+            // which can be 30KB+ for 70+ models — large payloads can stall Tauri IPC.
+            let simplified = if let Some(models) = v.get("models").and_then(|m| m.as_array()) {
+                let mapped: Vec<serde_json::Value> = models.iter().map(|m| {
+                    serde_json::json!({
+                        "provider": m.get("provider").and_then(|p| p.as_str()).unwrap_or(""),
+                        "id": m.get("id").and_then(|i| i.as_str()).unwrap_or(""),
+                        "name": m.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                    })
+                }).collect();
+                serde_json::json!({ "models": mapped })
+            } else {
+                v.clone()
+            };
+            Ok(simplified)
+        }
+        Err(e) => {
+            log::warn!("[pi_get_available_models] RPC failed: {}", e);
+            Err(e.clone())
+        }
+    }
 }
 
 #[tauri::command]
@@ -213,11 +277,14 @@ async fn pi_switch_session(
     state: State<'_, AppState>,
     session_path: String,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
-    // Track session for crash recovery
-    bridge.set_last_session_file(Some(session_path.clone()));
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        // Track session for crash recovery (needs bridge lock)
+        bridge.set_last_session_file(Some(session_path.clone()));
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
     let params = serde_json::json!({"sessionPath": session_path});
-    bridge.send_cmd_and_wait("switch_session", Some(params), 30)
+    PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "switch_session", Some(params), 30)
 }
 
 #[tauri::command]
@@ -226,25 +293,34 @@ async fn pi_set_model(
     provider: String,
     model_id: String,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
     let params = serde_json::json!({"provider": provider, "modelId": model_id});
-    bridge.send_cmd_and_wait("set_model", Some(params), 30)
+    PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "set_model", Some(params), 30)
 }
 
 #[tauri::command]
 async fn pi_get_session_stats(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
-    bridge.send_cmd_and_wait("get_session_stats", None, 30)
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
+    PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "get_session_stats", None, 30)
 }
 
 #[tauri::command]
 async fn pi_compact(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
-    bridge.send_cmd_and_wait("compact", None, 60)
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
+    PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "compact", None, 60)
 }
 
 #[tauri::command]
@@ -252,23 +328,29 @@ async fn pi_set_thinking_level(
     state: State<'_, AppState>,
     level: String,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
     let params = serde_json::json!({ "level": level });
-    bridge.send_cmd_and_wait("set_thinking_level", Some(params), 30)
+    PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "set_thinking_level", Some(params), 30)
 }
 
 #[tauri::command]
 async fn pi_get_context_usage(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let (process, pending) = {
+        let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+        (bridge.process.clone(), bridge.pending_responses())
+    }; // Bridge lock released
     // Pi may not support this directly; try get_session_stats and get_state
     let mut usage = serde_json::json!({
         "usedTokens": 0,
         "contextWindow": 0,
         "percent": 0,
     });
-    if let Ok(stats) = bridge.send_cmd_and_wait("get_session_stats", None, 15) {
+    if let Ok(stats) = PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "get_session_stats", None, 15) {
         if let Some(obj) = stats.as_object() {
             if let Some(t) = obj.get("totalTokens").and_then(|v| v.as_u64()) {
                 usage["usedTokens"] = serde_json::json!(t);
@@ -278,7 +360,7 @@ async fn pi_get_context_usage(
             }
         }
     }
-    if let Ok(state_resp) = bridge.send_cmd_and_wait("get_state", None, 10) {
+    if let Ok(state_resp) = PiBridge::send_cmd_and_wait_unlocked(&process, &pending, "get_state", None, 10) {
         if let Some(obj) = state_resp.as_object() {
             if let Some(model) = obj.get("model").and_then(|m| m.as_object()) {
                 if let Some(tl) = model.get("thinkingLevel").and_then(|v| v.as_str()) {
@@ -729,6 +811,33 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_fs::init())
+        // M9: Global shortcut Ctrl+Shift+Space toggles the main window
+        // (quick-access, similar to Spotlight/Raycast). Registered from Rust so
+        // no JS permission is required.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, _shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if let Some(window) = app.get_webview_window("main") {
+                        let is_visible = window.is_visible().unwrap_or(false);
+                        let is_focused = window.is_focused().unwrap_or(false);
+                        if is_visible && is_focused {
+                            // Hide when already focused — quick toggle off.
+                            let _ = window.hide();
+                        } else {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            // Notify frontend to focus the input
+                            let _ = window.emit("pi:event", serde_json::json!({
+                                "type": "global_quick_open"
+                            }));
+                        }
+                    }
+                })
+                .build(),
+        )
         .manage(AppState {
             bridge: bridge.clone(),
             database,
@@ -802,46 +911,76 @@ pub fn run() {
                 let bridge_for_died = bridge.clone();
                 let restart_attempt_for_died = restart_attempt.clone();
                 let handle_for_died = handle.clone();
-                app.listen("pi:event", move |_event| {
-                    // We re-check inside by inspecting bridge state. The actual event payload
-                    // is delivered via the listener but we can't easily deserialize here,
-                    // so we use a polling-style check: only attempt restart if process not running.
-                    // The frontend also gets process_died and shows a banner; here we proactively
-                    // try to restart with exponential backoff (max 3 attempts).
-                    let attempt = restart_attempt_for_died.fetch_add(1, Ordering::SeqCst) + 1;
-                    if attempt > 3 {
-                        log::error!("Max restart attempts (3) reached, giving up");
-                        restart_attempt_for_died.store(0, Ordering::SeqCst);
+                app.listen("pi:event", move |event| {
+                    // Only react to process_died events. Ignore all other events
+                    // (message_update, text_delta, etc.) to avoid blocking the event loop.
+                    let payload_str = event.payload();
+                    let is_process_died = serde_json::from_str::<serde_json::Value>(payload_str)
+                        .ok()
+                        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s == "process_died"))
+                        .unwrap_or(false);
+                    if !is_process_died {
                         return;
                     }
-                    // Brief backoff: 500ms * attempt
-                    std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
-                    let mut b = bridge_for_died.lock().unwrap();
-                    let needs_restart = {
-                        let mut p = b.process.lock().unwrap();
-                        !p.is_running()
-                    };
-                    if needs_restart {
-                        log::warn!("Auto-restart attempt #{}", attempt);
-                        match b.restart_with_recovery(handle_for_died.clone()) {
-                            Ok(()) => {
-                                log::info!("Auto-restart succeeded");
-                                restart_attempt_for_died.store(0, Ordering::SeqCst);
-                                // After restart, restore last session if any
-                                if let Some(last_session) = b.last_session_file() {
-                                    log::info!("Restoring last session: {}", last_session);
-                                    let params = serde_json::json!({"sessionPath": last_session});
-                                    let _ = b.send_cmd_and_wait("switch_session", Some(params), 30);
+
+                    let bridge_clone = bridge_for_died.clone();
+                    let handle_clone = handle_for_died.clone();
+                    let attempt_counter = restart_attempt_for_died.clone();
+
+                    // Spawn a new thread so we never block the event loop.
+                    // Blocking here would stall all Tauri IPC and event delivery.
+                    std::thread::spawn(move || {
+                        let attempt = attempt_counter.fetch_add(1, Ordering::SeqCst) + 1;
+                        if attempt > 3 {
+                            log::error!("Max restart attempts (3) reached, giving up");
+                            attempt_counter.store(0, Ordering::SeqCst);
+                            return;
+                        }
+                        // Brief backoff: 500ms * attempt
+                        std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+
+                        // Check if process is actually dead (could have been restarted already)
+                        let needs_restart = {
+                            let b = bridge_clone.lock().unwrap();
+                            let mut p = b.process.lock().unwrap();
+                            !p.is_running()
+                        };
+
+                        if needs_restart {
+                            log::warn!("Auto-restart attempt #{}", attempt);
+                            let mut b = bridge_clone.lock().unwrap();
+                            match b.restart_with_recovery(handle_clone.clone()) {
+                                Ok(()) => {
+                                    log::info!("Auto-restart succeeded");
+                                    attempt_counter.store(0, Ordering::SeqCst);
+                                    // After restart, restore last session if any
+                                    if let Some(last_session) = b.last_session_file() {
+                                        log::info!("Restoring last session: {}", last_session);
+                                        let params = serde_json::json!({"sessionPath": last_session});
+                                        drop(b); // Release bridge lock before waiting for RPC
+                                        let process = {
+                                            let br = bridge_clone.lock().unwrap();
+                                            br.process.clone()
+                                        };
+                                        let pending = {
+                                            let br = bridge_clone.lock().unwrap();
+                                            br.pending_responses()
+                                        };
+                                        let _ = PiBridge::send_cmd_and_wait_unlocked(
+                                            &process, &pending,
+                                            "switch_session", Some(params), 30,
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Auto-restart failed: {}", e);
                                 }
                             }
-                            Err(e) => {
-                                log::error!("Auto-restart failed: {}", e);
-                            }
+                        } else {
+                            // Process is still running; reset counter
+                            attempt_counter.store(0, Ordering::SeqCst);
                         }
-                    } else {
-                        // Process is still running; reset counter
-                        restart_attempt_for_died.store(0, Ordering::SeqCst);
-                    }
+                    });
                 });
             }
 
@@ -896,6 +1035,19 @@ pub fn run() {
                 let _ = handle.emit("pi:binary_missing", serde_json::json!({
                     "searched": ["PATH", "PI_BINARY"]
                 }));
+            }
+
+            // Register the Ctrl+Shift+Space global shortcut. The handler was
+            // installed via the plugin Builder above; here we just bind the
+            // key combination. Failures are non-fatal (e.g. another app owns
+            // the combo) — we log and continue.
+            {
+                let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+                if let Err(e) = app.global_shortcut().register(shortcut) {
+                    log::warn!("Failed to register global shortcut Ctrl+Shift+Space: {}", e);
+                } else {
+                    log::info!("Global shortcut Ctrl+Shift+Space registered");
+                }
             }
 
             setup_tray(app)?;
