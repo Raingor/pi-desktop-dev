@@ -280,17 +280,19 @@ fn get_session_dirs() -> Vec<PathBuf> {
 }
 
 fn decode_project_name(dir_name: &str) -> (String, String) {
-    let decoded = dir_name
-        .trim_start_matches("--")
-        .trim_end_matches("--")
-        .replace("--", "/");
+    // Pi CLI encodes paths as: --segment1--segment2--...--segmentN--
+    // Split by "--" to recover original path segments
+    let segments: Vec<&str> = dir_name
+        .split("--")
+        .filter(|s| !s.is_empty())
+        .collect();
+    let decoded = format!("/{}", segments.join("/"));
     let home = std::env::var("HOME").unwrap_or_default();
-    let display_name = if decoded.starts_with(&home) {
+    let display_name = if !home.is_empty() && decoded.starts_with(&home) {
         format!("~{}", decoded.trim_start_matches(&home))
     } else {
         decoded.clone()
     };
-    let segments: Vec<&str> = display_name.split('/').filter(|s| !s.is_empty()).collect();
     let project_name = segments.last().map(|s| s.to_string()).unwrap_or_else(|| dir_name.to_string());
     (decoded, project_name)
 }
@@ -663,20 +665,6 @@ pub fn pi_list_sessions_detailed() -> Result<Vec<ProjectGroup>, String> {
     let mut groups: HashMap<String, ProjectGroup> = HashMap::new();
 
     for dir in &dirs {
-        let dir_name = dir.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        let (project_path, project_name) = decode_project_name(&dir_name);
-
-        let group = groups.entry(project_path.clone()).or_insert(ProjectGroup {
-            projectPath: project_path.clone(),
-            projectName: project_name.clone(),
-            sessions: Vec::new(),
-            totalSessions: 0,
-            lastActive: String::new(),
-        });
-
         let mut files: Vec<_> = match fs::read_dir(dir) {
             Ok(entries) => entries
                 .filter_map(|e| e.ok())
@@ -687,6 +675,35 @@ pub fn pi_list_sessions_detailed() -> Result<Vec<ProjectGroup>, String> {
         };
         files.sort();
         files.reverse();
+
+        // Read cwd from the first session file header (reliable, no slug decoding needed)
+        let mut project_path = String::new();
+        let mut project_name = String::new();
+        for file_path in &files {
+            if let Some(cwd) = read_cwd_from_session(file_path) {
+                project_path = cwd.clone();
+                project_name = cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&cwd).to_string();
+                break;
+            }
+        }
+        // Fallback: decode from directory name if no cwd found in session files
+        if project_path.is_empty() {
+            let dir_name = dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let (decoded, name) = decode_project_name(&dir_name);
+            project_path = decoded;
+            project_name = name;
+        }
+
+        let group = groups.entry(project_path.clone()).or_insert(ProjectGroup {
+            projectPath: project_path.clone(),
+            projectName: project_name.clone(),
+            sessions: Vec::new(),
+            totalSessions: 0,
+            lastActive: String::new(),
+        });
 
         for file_path in &files {
             if let Some(session) = parse_session_file_info(file_path) {
@@ -705,6 +722,20 @@ pub fn pi_list_sessions_detailed() -> Result<Vec<ProjectGroup>, String> {
         .collect();
     result.sort_by(|a, b| b.lastActive.cmp(&a.lastActive));
     Ok(result)
+}
+
+/// Read the `cwd` field from a session JSONL file's header line.
+fn read_cwd_from_session(file_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(file_path).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let obj: serde_json::Value = serde_json::from_str(line).ok()?;
+        if obj.get("type").and_then(|t| t.as_str()) == Some("session") {
+            return obj.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+        }
+    }
+    None
 }
 
 fn parse_session_file_info(file_path: &Path) -> Option<DetailedSessionEntry> {
@@ -1648,10 +1679,15 @@ mod tests {
 
     #[test]
     fn decode_project_name_strips_dashes_and_extracts_last_segment() {
-        // Double-dash segments become "/", leading/trailing "--" are trimmed.
+        // Pi encodes paths as --seg1--seg2--seg3--, split by "--" recovers segments.
         let (decoded, project) = decode_project_name("--Users--foo--bar--");
-        assert_eq!(decoded, "Users/foo/bar");
+        assert_eq!(decoded, "/Users/foo/bar");
         assert_eq!(project, "bar");
+
+        // Paths with single dashes in segments (e.g. mac-2312-r, T-Task)
+        let (decoded2, project2) = decode_project_name("--Users-mac-2312-r--workspace--C-Company--T-Task--");
+        assert_eq!(decoded2, "/Users-mac-2312-r/workspace/C-Company/T-Task");
+        assert_eq!(project2, "T-Task");
     }
 
     #[test]

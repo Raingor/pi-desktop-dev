@@ -53,6 +53,7 @@ impl PiProcess {
             .arg("--mode")
             .arg("rpc")
             .env("PATH", Self::pi_path())
+            .env_remove("NODE_OPTIONS")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

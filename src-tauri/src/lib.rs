@@ -32,12 +32,13 @@ async fn pi_bootstrap(
     let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
     let bp = bridge.binary_path();
     let pv = bridge.pi_version();
+    let cwd = std::env::current_dir().ok().and_then(|p| p.to_str().map(|s| s.to_string()));
 
     Ok(serde_json::json!({
         "binaryPath": bp,
         "piVersion": pv,
         "sessionId": null,
-        "cwd": null,
+        "cwd": cwd,
     }))
 }
 
@@ -122,6 +123,22 @@ async fn pi_abort(
     process.send_command(&json)
 }
 
+/// Cancel an in-progress auto-retry backoff (from the retry banner's Cancel button).
+#[tauri::command]
+async fn pi_abort_retry(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let cmd = pibridge::protocol::RpcCommand {
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        cmd_type: "abort_retry".to_string(),
+        params: None,
+    };
+    let json = jsonl::encode_command(&cmd);
+    let mut process = bridge.process.lock().map_err(|e| e.to_string())?;
+    process.send_command(&json)
+}
+
 #[tauri::command]
 async fn pi_new_session(
     state: State<'_, AppState>,
@@ -144,8 +161,10 @@ async fn pi_get_messages(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
-    // Try RPC first
-    match bridge.send_cmd_and_wait("get_messages", None, 15) {
+    // Short timeout: history is normally rendered from the local session file
+    // (see loadMessages); this RPC is only a best-effort fallback, so we must not
+    // hold the global bridge lock long enough to stall other commands.
+    match bridge.send_cmd_and_wait("get_messages", None, 6) {
         Ok(data) => Ok(data),
         Err(e) => {
             log::warn!("get_messages RPC failed: {}; trying local file read", e);
@@ -393,6 +412,130 @@ async fn save_export_file(
         .map_err(|e| format!("Failed to write export file: {}", e))?;
 
     Ok(clean_path)
+}
+
+/// Open a directory picker dialog. Returns the selected path, or error if cancelled.
+#[tauri::command]
+async fn pick_directory(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    app.dialog()
+        .file()
+        .pick_folder(move |folder| {
+            let result = folder.map(|p| p.to_string());
+            let _ = tx.send(result);
+        });
+
+    let path = rx
+        .recv()
+        .map_err(|e| format!("Dialog channel error: {}", e))?
+        .ok_or_else(|| "Directory picker cancelled".to_string())?;
+
+    let clean_path = if let Some(stripped) = path.strip_prefix("file://") {
+        stripped.to_string()
+    } else {
+        path
+    };
+
+    Ok(clean_path)
+}
+
+/// List files in a directory, optionally recursing into subdirectories when a query
+/// filter is provided. Used by the frontend @mention file search feature.
+/// - Without query: shallow (top-level only, sorted dirs first).
+/// - With query: recursive search up to 4 levels deep, max 100 results.
+#[tauri::command]
+fn list_directory_files(path: String, query: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    use std::fs;
+    use std::path::Path;
+
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Not a directory: {}", path));
+    }
+
+    let filter = query.as_deref().unwrap_or("").to_lowercase();
+    let is_recursive = !filter.is_empty();
+    let max_depth: u32 = if is_recursive { 4 } else { 1 };
+    let mut results = Vec::new();
+
+    // Recursive directory walker
+    fn walk(
+        dir: &Path,
+        root: &Path,
+        filter: &str,
+        is_recursive: bool,
+        depth: u32,
+        max_depth: u32,
+        results: &mut Vec<serde_json::Value>,
+    ) -> Result<(), String> {
+        if depth > max_depth { return Ok(()); }
+
+        let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {}", e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden files/dirs
+            if name.starts_with('.') { continue; }
+
+            let ft = entry.file_type().map_err(|e| format!("Failed to get file type: {}", e))?;
+            let is_dir = ft.is_dir();
+            let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+
+            // Build display name (relative path from root for recursive)
+            let display_name = if depth == 0 || !is_recursive {
+                name.clone()
+            } else {
+                let full = entry.path();
+                full.strip_prefix(root).unwrap_or(&full).to_string_lossy().to_string()
+            };
+
+            // Apply text filter on the display name
+            let passes_filter = display_name.to_lowercase().contains(filter);
+            if !filter.is_empty() && !passes_filter && !is_dir {
+                continue;
+            }
+
+            let file_type = if is_dir { "directory" } else { "file" };
+
+            // For recursive search, only add matched files (not dirs that passed filter)
+            // For shallow search, add everything that passed the filter
+            if !is_recursive || (passes_filter && !is_dir) {
+                results.push(serde_json::json!({
+                    "name": if is_recursive { display_name } else { name },
+                    "type": file_type,
+                    "size": size,
+                    "path": entry.path().to_string_lossy(),
+                }));
+            }
+
+            // Recurse into directories (always, even for non-recursive shallow when depth < max_depth)
+            if is_dir && depth < max_depth {
+                let sub_path = entry.path();
+                walk(sub_path.as_path(), root, filter, is_recursive, depth + 1, max_depth, results)?;
+            }
+
+            if results.len() >= 100 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    walk(root, root, &filter, is_recursive, 0, max_depth, &mut results)?;
+
+    // Sort: directories first, then by name
+    results.sort_by(|a, b| {
+        let a_dir = a["type"] == "directory";
+        let b_dir = b["type"] == "directory";
+        if a_dir != b_dir { return b_dir.cmp(&a_dir); }
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    // Limit to 100 results
+    results.truncate(100);
+    Ok(results)
 }
 
 /// Import a .jsonl session file into Pi's sessions directory.
@@ -765,6 +908,7 @@ pub fn run() {
             pi_steer,
             pi_follow_up,
             pi_abort,
+            pi_abort_retry,
             pi_new_session,
             pi_get_state,
             pi_get_messages,
@@ -801,6 +945,8 @@ pub fn run() {
             pi_list_external_sessions,
             // M7/M8/crash recovery
             save_export_file,
+            pick_directory,
+            list_directory_files,
             import_jsonl,
             show_notification,
             set_tray_badge,

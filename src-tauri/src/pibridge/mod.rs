@@ -132,9 +132,12 @@ impl PiBridge {
         }
     }
 
-    /// Start a background thread that reads lines from the pi child process stdout
-    /// and forwards them to the frontend as Tauri events.
-    /// Returns a JoinHandle so the caller can monitor the thread.
+    /// Start a background thread that reads lines from the pi child process stdout.
+    /// Responses are routed to waiting command handlers immediately; all other messages
+    /// are handed off to a dedicated emitter thread so that a slow/blocked `emit` can
+    /// never stall the read loop (which would starve request/response correlation and
+    /// make every RPC time out while pi keeps streaming events).
+    /// Returns a JoinHandle so the caller can monitor the reader thread.
     pub fn start_stdout_reader(
         &self,
         stdout: std::process::ChildStdout,
@@ -142,6 +145,20 @@ impl PiBridge {
         stop_signal: Arc<std::sync::atomic::AtomicBool>,
         pending: Arc<Mutex<HashMap<String, mpsc::Sender<serde_json::Value>>>>,
     ) -> std::thread::JoinHandle<()> {
+        // Dedicated emitter: draining events off-thread keeps the reader loop free to
+        // route responses even if `emit` blocks (e.g. while a blocking command occupies
+        // the async runtime during startup).
+        let (evt_tx, evt_rx) = mpsc::channel::<serde_json::Value>();
+        let emit_handle = handle.clone();
+        std::thread::Builder::new()
+            .name("pi-event-emitter".to_string())
+            .spawn(move || {
+                while let Ok(val) = evt_rx.recv() {
+                    let _ = emit_handle.emit("pi:event", val);
+                }
+            })
+            .expect("Failed to spawn pi event emitter thread");
+
         std::thread::Builder::new()
             .name("pi-stdout-reader".to_string())
             .spawn(move || {
@@ -176,8 +193,9 @@ impl PiBridge {
                                     }
                                 }
 
-                                // Forward everything else as a pi:event to the frontend
-                                let _ = handle.emit("pi:event", val);
+                                // Hand off to the emitter thread (non-blocking) so the
+                                // read loop never stalls on a slow `emit`.
+                                let _ = evt_tx.send(val);
                             }
                         }
                         Err(e) => {

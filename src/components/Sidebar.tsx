@@ -245,7 +245,7 @@ const Sidebar: React.FC = () => {
         confirmLoading={renaming}
         okText={t('common.save')}
         cancelText={t('common.cancel')}
-        destroyOnClose
+        destroyOnHidden
         okButtonProps={{ style: { background: 'var(--accent-teal)', borderColor: 'var(--accent-teal)', color: '#0a0a0f' } }}
       >
         <Input

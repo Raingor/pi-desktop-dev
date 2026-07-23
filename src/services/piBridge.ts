@@ -30,6 +30,10 @@ export async function piAbort(): Promise<void> {
   return invoke('pi_abort');
 }
 
+export async function piAbortRetry(): Promise<void> {
+  return invoke('pi_abort_retry');
+}
+
 export async function piNewSession(): Promise<{ cancelled: boolean }> {
   return invoke('pi_new_session');
 }
@@ -94,6 +98,16 @@ export async function appTrustCwd(cwd: string, trusted: boolean): Promise<void> 
 }
 
 // ─── M8: Export / Import ───────────────────────────────────────
+
+/** Open a native directory picker dialog. Returns selected path or throws if cancelled. */
+export async function pickDirectory(): Promise<string> {
+  return invoke('pick_directory');
+}
+
+/** List files in a directory. Without query: shallow scan; with query: recursive search (up to 4 levels). Used by @mention file search. */
+export async function listDirectoryFiles(path: string, query?: string): Promise<{name: string; type: 'file' | 'directory'; size: number; path: string}[]> {
+  return invoke('list_directory_files', { path, query: query ?? null });
+}
 
 /** Save export content to a file (uses Tauri dialog + fs). Returns chosen path. */
 export async function saveExportFile(defaultName: string, content: string): Promise<string> {

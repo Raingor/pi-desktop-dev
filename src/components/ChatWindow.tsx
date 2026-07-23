@@ -1,12 +1,14 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { Button, Typography, Image, Tooltip, Dropdown, Tag } from 'antd';
-import { DownOutlined, SettingOutlined, PaperClipOutlined, ThunderboltOutlined, ReloadOutlined, ExportOutlined, ImportOutlined, CloseOutlined, BulbOutlined, AimOutlined, CompressOutlined, EditOutlined } from '@ant-design/icons';
+import { Button, Typography, Image, Tooltip, Dropdown, Tag, Modal, message } from 'antd';
+import { DownOutlined, SettingOutlined, PaperClipOutlined, ThunderboltOutlined, ReloadOutlined, ExportOutlined, ImportOutlined, CloseOutlined, BulbOutlined, AimOutlined, CompressOutlined, EditOutlined, CheckOutlined, FolderOutlined, FileOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
 import { useAppStore, InputMode } from '../stores/appStore';
-import type { ThinkingLevel, SlashCommand, MentionItem } from '../types';
+import type { ThinkingLevel, SlashCommand, MentionItem, ProjectGroup } from '../types';
 import { PlusIcon, SendIcon, StopIcon } from './icons';
+import { pickDirectory, listDirectoryFiles } from '../services/piBridge';
+import { piListSessionsDetailed } from '../services/piConfigService';
 
 const { Text } = Typography;
 
@@ -69,6 +71,7 @@ const ChatWindow: React.FC = () => {
     agentPhase,
     crashRecovery,
     dismissRetry,
+    abortRetry,
     dismissCompaction,
     dismissCrashRecovery,
     triggerCompaction,
@@ -76,6 +79,7 @@ const ChatWindow: React.FC = () => {
     exportMarkdown,
     exportJson,
     importJsonl,
+    loadSessions,
     loadAvailableModels,
     contextUsage,
     thinkingLevel,
@@ -83,6 +87,7 @@ const ChatWindow: React.FC = () => {
     refreshContextUsage,
     optimizeInput,
     sessions,
+    piCwd,
   } = useAppStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -99,6 +104,81 @@ const ChatWindow: React.FC = () => {
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
+
+  // File search results for @mention file suggestion
+  const [fileEntries, setFileEntries] = useState<{name: string; type: 'file' | 'directory'; size: number; path: string}[]>([]);
+
+  // ─── Project selector state ────────────────────────────────
+  const [knownProjects, setKnownProjects] = useState<ProjectGroup[]>([]);
+  const [selectedProjectPath, setSelectedProjectPath] = useState<string>('');
+
+  useEffect(() => {
+    piListSessionsDetailed().then((groups) => {
+      setKnownProjects(groups);
+      // Default to the first (most recent) project if none selected
+      if (groups.length > 0 && !selectedProjectPath) {
+        setSelectedProjectPath(groups[0].projectPath);
+      } else if (groups.length === 0 && !selectedProjectPath && piCwd) {
+        // No sessions yet — fall back to pi's current working directory
+        setSelectedProjectPath(piCwd);
+      }
+    }).catch(() => {});
+  }, [piCwd]);
+
+  // Fetch files from the selected project directory when mention opens
+  useEffect(() => {
+    if (mentionOpen && selectedProjectPath) {
+      listDirectoryFiles(selectedProjectPath, mentionQuery || undefined)
+        .then(setFileEntries)
+        .catch(() => setFileEntries([]));
+    } else if (!mentionOpen) {
+      setFileEntries([]);
+    }
+  }, [mentionOpen, mentionQuery, selectedProjectPath]);
+
+  const selectedProjectName = useMemo(() => {
+    const found = knownProjects.find(g => g.projectPath === selectedProjectPath);
+    return found?.projectName || selectedProjectPath.split('/').pop() || '';
+  }, [knownProjects, selectedProjectPath]);
+
+  const projectMenuItems = useMemo(() => {
+    const items = knownProjects.map((g) => ({
+      key: g.projectPath,
+      label: (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 180 }}>
+          {g.projectPath === selectedProjectPath && <CheckOutlined style={{ fontSize: 10, color: 'var(--accent-teal)' }} />}
+          <span style={{ paddingLeft: g.projectPath === selectedProjectPath ? 0 : 14, fontSize: 12, color: 'var(--text-secondary)' }}>
+            {g.projectName}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+            {g.projectPath}
+          </span>
+        </div>
+      ),
+      onClick: () => setSelectedProjectPath(g.projectPath),
+    }));
+    items.push({
+      key: '__open_folder__',
+      label: (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--accent-teal)', paddingTop: 4, borderTop: '1px solid var(--border-color)' }}>
+          <FolderOutlined /> {t('chatWindow.openFolder')}
+        </div>
+      ),
+      onClick: async () => {
+        try {
+          const path = await pickDirectory();
+          if (path) {
+            setSelectedProjectPath(path);
+            // Add to known projects if not already there
+            if (!knownProjects.find(g => g.projectPath === path)) {
+              setKnownProjects(prev => [{ projectPath: path, projectName: path.split('/').pop() || path, sessions: [], totalSessions: 0, lastActive: '' }, ...prev]);
+            }
+          }
+        } catch { /* cancelled */ }
+      },
+    });
+    return items;
+  }, [knownProjects, selectedProjectPath, t]);
 
   // Auto-scroll on new messages
   useEffect(() => {
@@ -162,15 +242,81 @@ const ChatWindow: React.FC = () => {
     setAttachedImages((prev) => prev.filter((img) => img.name !== name));
   }, []);
 
+  // ─── Export dialog state ────────────────────────────────────
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+
   // ─── Send / mode actions ──────────────────────────────────
   const handleSend = () => {
-    if (inputValue.trim() && !isStreaming) {
-      const imgs = attachedImages.map((img) => img.data);
-      sendMessage(inputValue, imgs.length > 0 ? imgs : undefined);
-      setAttachedImages([]);
-      setSlashOpen(false);
-      setMentionOpen(false);
+    const text = inputValue.trim();
+    if (!text || isStreaming) return;
+
+    // Intercept slash-action commands before sending to Pi.
+    const firstWord = text.split(/\s+/)[0];
+    if (firstWord === '/export') {
+      const format = text.split(/\s+/)[1]?.toLowerCase();
+      if (format === 'html' || format === 'md' || format === 'json') {
+        // Direct export in specified format
+        doExport(format as 'html' | 'md' | 'json');
+      } else {
+        // Show format picker
+        setExportModalOpen(true);
+      }
+      setInputValue('');
+      return;
     }
+    if (firstWord === '/compact') {
+      triggerCompaction();
+      setInputValue('');
+      return;
+    }
+    if (firstWord === '/clear') {
+      newSession();
+      setInputValue('');
+      return;
+    }
+
+    const imgs = attachedImages.map((img) => img.data);
+    sendMessage(text, imgs.length > 0 ? imgs : undefined);
+    setAttachedImages([]);
+    setSlashOpen(false);
+    setMentionOpen(false);
+  };
+
+  // ─── Export helpers ────────────────────────────────────────
+  const doExport = async (format: 'html' | 'md' | 'json') => {
+    try {
+      setExportModalOpen(false);
+      let exportFn: () => Promise<string>;
+      if (format === 'html') exportFn = () => exportHtml();
+      else if (format === 'md') exportFn = () => exportMarkdown();
+      else exportFn = () => exportJson();
+      const path = await exportFn();
+      message.success(t('chatWindow.exportSuccess', 'Exported to ') + path);
+    } catch (e: any) {
+      if (e !== 'Save dialog cancelled') {
+        message.error(t('chatWindow.exportFailed', 'Export failed'));
+      }
+    }
+  };
+
+  const handleImportJsonl = async () => {
+    try {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.jsonl';
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          await importJsonl((file as any).path || file.name);
+          message.success(t('chatWindow.importSuccess', 'Session imported'));
+          loadSessions();
+        } catch (e: any) {
+          message.error(t('chatWindow.importFailed', 'Import failed'));
+        }
+      };
+      input.click();
+    } catch { /* cancelled */ }
   };
 
   // Detect "/" or "@" trigger based on cursor position.
@@ -211,18 +357,25 @@ const ChatWindow: React.FC = () => {
     );
   }, [slashQuery]);
 
-  // Build mention candidates from models, sessions, and built-in categories.
+  // Build mention candidates — files/sessions/memory first, models last
+  // so user sees file suggestions immediately instead of being buried by models.
   const mentionItems = useMemo<MentionItem[]>(() => {
     const items: MentionItem[] = [];
-    // Models
-    for (const m of availableModels.slice(0, 30)) {
+
+    // Actual file entries from the project directory
+    for (const f of fileEntries.slice(0, 40)) {
+      const isDir = f.type === 'directory';
       items.push({
-        key: `model-${m.provider}-${m.modelId}`,
-        label: `${m.label || m.modelId}`,
-        description: `model · ${m.provider}`,
-        type: 'model',
-        insertText: `@model:${m.provider}/${m.modelId}`,
+        key: `file-${f.path}`,
+        label: f.name,
+        description: isDir ? 'directory' : `${(f.size / 1024).toFixed(1)} KB`,
+        type: 'file',
+        insertText: isDir ? `@file:${f.path}/` : `@file:${f.path}`,
       });
+    }
+    // Fallback file placeholder for manual path entry
+    if (fileEntries.length === 0) {
+      items.push({ key: 'mem-file', label: 'file', description: 'reference a file path', type: 'file', insertText: '@file:' });
     }
     // Sessions (recent 15)
     for (const s of sessions.slice(0, 15)) {
@@ -237,9 +390,18 @@ const ChatWindow: React.FC = () => {
     }
     // Built-in pseudo items
     items.push({ key: 'mem-memory', label: 'memory', description: 'reference memory store', type: 'memory', insertText: '@memory:' });
-    items.push({ key: 'mem-file', label: 'file', description: 'reference a file path', type: 'file', insertText: '@file:' });
+    // Models (at the end — least likely to be what user wants with @)
+    for (const m of availableModels.slice(0, 30)) {
+      items.push({
+        key: `model-${m.provider}-${m.modelId}`,
+        label: `${m.label || m.modelId}`,
+        description: `model · ${m.provider}`,
+        type: 'model',
+        insertText: `@model:${m.provider}/${m.modelId}`,
+      });
+    }
     return items;
-  }, [availableModels, sessions]);
+  }, [availableModels, sessions, fileEntries]);
 
   const filteredMentionItems = useMemo(() => {
     const q = mentionQuery.toLowerCase();
@@ -379,8 +541,13 @@ const ChatWindow: React.FC = () => {
 
   const currentModelLabel = useMemo(() => {
     if (!availableModels.length) return t('chatWindow.noModel');
-    const m = currentModel && availableModels.find((x) => x.provider === currentModel.provider && x.modelId === currentModel.modelId);
-    return m?.label || m?.modelId || currentModel?.modelId || availableModels[0]?.label || availableModels[0]?.modelId || t('chatWindow.selectModel');
+    // ZCode-style: show "@provider/modelId" for the active model.
+    if (currentModel?.provider && currentModel?.modelId) {
+      return `@${currentModel.provider}/${currentModel.modelId}`;
+    }
+    const first = availableModels[0];
+    if (first) return `@${first.provider}/${first.modelId}`;
+    return t('chatWindow.selectModel');
   }, [availableModels, currentModel, t]);
 
   const handlePickModel = (provider: string, modelId: string) => {
@@ -389,45 +556,52 @@ const ChatWindow: React.FC = () => {
   };
 
   const modelMenu = useMemo(() => {
-    const providerEntries = Object.entries(modelsByProvider).map(([provider, models]) => ({
-      key: `provider-${provider}`,
-      type: 'group' as const,
-      label: <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>{provider}</span>,
-      children: models.map((m) => ({
-        key: `${m.provider}::${m.modelId}`,
+    // ZCode-style cascade: top level = providers, hover reveals their models.
+    const items: any[] = Object.entries(modelsByProvider).map(([provider, models]) => {
+      const isCurrentProvider = currentModel?.provider === provider;
+      return {
+        key: `provider-${provider}`,
         label: (
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-            <span style={{ color: currentModel?.provider === m.provider && currentModel?.modelId === m.modelId ? 'var(--accent-teal)' : 'var(--text-secondary)', fontWeight: currentModel?.provider === m.provider && currentModel?.modelId === m.modelId ? 600 : 400 }}>
-              {m.label || m.modelId}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, minWidth: 150 }}>
+            <span style={{ color: isCurrentProvider ? 'var(--accent-teal)' : 'var(--text-secondary)', fontWeight: isCurrentProvider ? 600 : 400 }}>
+              {provider}
             </span>
-            {currentModel?.provider === m.provider && currentModel?.modelId === m.modelId && (
-              <span style={{ color: 'var(--accent-teal)', fontSize: 10 }}>●</span>
-            )}
+            {isCurrentProvider && <CheckOutlined style={{ fontSize: 11, color: 'var(--accent-teal)' }} />}
           </div>
         ),
-        onClick: () => handlePickModel(m.provider, m.modelId),
-      })),
-    }));
-    // Footer entry: Manage Models
-    providerEntries.push({
-      key: '__manage__',
-      type: 'group' as const,
-      label: <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>·</span>,
-      children: [{
-        key: '__manage_action__',
-        label: (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-teal)', fontWeight: 500 }}>
-            <SettingOutlined style={{ fontSize: 11 }} />
-            <span>{t('chatWindow.manageModels')}</span>
-          </div>
-        ),
-        onClick: () => {
-          setModelPickerOpen(false);
-          useAppStore.getState().toggleSettings();
-        },
-      }],
+        children: models.map((m) => {
+          const isCurrent = currentModel?.provider === m.provider && currentModel?.modelId === m.modelId;
+          return {
+            key: `${m.provider}::${m.modelId}`,
+            label: (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, minWidth: 170 }}>
+                <span style={{ color: isCurrent ? 'var(--accent-teal)' : 'var(--text-secondary)', fontWeight: isCurrent ? 600 : 400 }}>
+                  {m.label || m.modelId}
+                </span>
+                {isCurrent && <CheckOutlined style={{ fontSize: 11, color: 'var(--accent-teal)' }} />}
+              </div>
+            ),
+            onClick: () => handlePickModel(m.provider, m.modelId),
+          };
+        }),
+      };
     });
-    return { items: providerEntries };
+    // Divider + "Manage models" footer entry.
+    items.push({ type: 'divider' as const });
+    items.push({
+      key: '__manage_action__',
+      label: (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}>
+          <SettingOutlined style={{ fontSize: 11 }} />
+          <span>{t('chatWindow.manageModels')}</span>
+        </div>
+      ),
+      onClick: () => {
+        setModelPickerOpen(false);
+        useAppStore.getState().toggleSettings();
+      },
+    });
+    return { items };
   }, [modelsByProvider, currentModel, t]);
 
   // ─── Export menu ──────────────────────────────────────────
@@ -513,9 +687,9 @@ const ChatWindow: React.FC = () => {
             </Tag>
           )}
           {queueState && queueState.total > 0 && (
-            <Tooltip title={`Active: ${queueState.active} · Pending: ${queueState.pending}`}>
+            <Tooltip title={t('chatWindow.queueTooltip', { steering: queueState.steering, followUp: queueState.followUp })}>
               <Tag color="blue" style={{ marginLeft: 4, fontSize: 10, padding: '1px 8px', borderRadius: 4 }}>
-                queue: {queueState.active}/{queueState.total}
+                {t('chatWindow.queueChip', { count: queueState.total })}
               </Tag>
             </Tooltip>
           )}
@@ -554,15 +728,26 @@ const ChatWindow: React.FC = () => {
       {/* Retry banner */}
       {retryInfo?.visible && (
         <div style={{
-          padding: '6px 16px', background: 'var(--accent-amber)' + '20',
-          borderBottom: '1px solid rgba(255,184,77,0.3)',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: 'var(--accent-amber)',
+          padding: '6px 16px',
+          background: retryInfo.failed ? 'var(--accent-danger-dim)' : 'var(--accent-amber)' + '20',
+          borderBottom: `1px solid ${retryInfo.failed ? 'rgba(255,107,107,0.3)' : 'rgba(255,184,77,0.3)'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12,
+          color: retryInfo.failed ? 'var(--accent-danger)' : 'var(--accent-amber)',
         }}>
           <span>
-            ⚠ {t('chatWindow.autoRetry', { attempt: retryInfo.attempt, max: retryInfo.maxAttempts || '?' })}
+            {retryInfo.failed
+              ? `✕ ${t('chatWindow.retryFailed', { attempt: retryInfo.attempt })}`
+              : `⚠ ${t('chatWindow.autoRetry', { attempt: retryInfo.attempt, max: retryInfo.maxAttempts || '?' })}`}
+            {!retryInfo.failed && retryInfo.delayMs ? ` · ${t('chatWindow.retryIn', { secs: Math.ceil(retryInfo.delayMs / 1000) })}` : ''}
             {retryInfo.reason ? ` — ${retryInfo.reason}` : ''}
           </span>
-          <Button type="text" size="small" icon={<CloseOutlined />} onClick={dismissRetry} style={{ color: 'var(--text-muted)', padding: 0, height: 16 }} />
+          {retryInfo.failed ? (
+            <Button type="text" size="small" icon={<CloseOutlined />} onClick={dismissRetry} style={{ color: 'var(--text-muted)', padding: 0, height: 16 }} />
+          ) : (
+            <Button type="text" size="small" onClick={abortRetry} style={{ color: 'var(--accent-amber)', padding: '0 8px', height: 18, fontSize: 11 }}>
+              {t('chatWindow.retryCancel')}
+            </Button>
+          )}
         </div>
       )}
 
@@ -584,14 +769,79 @@ const ChatWindow: React.FC = () => {
       {/* Messages */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 0' }}>
         {messages.length === 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 40 }}>
-            <div style={{ width: 64, height: 64, borderRadius: 20, background: 'linear-gradient(135deg, rgba(0,212,170,0.1), rgba(124,92,252,0.1))', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16, fontSize: 28 }}>💬</div>
-            <Text style={{ fontSize: 16, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 500 }}>{t('chatWindow.startConversation')}</Text>
-            <Text style={{ fontSize: 13, color: 'var(--text-muted)' }}>{t('chatWindow.startDesc')}</Text>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 40, userSelect: 'none' }}>
+            {/* Pi logo — larger, with glow */}
+            <div style={{
+              width: 72, height: 72, borderRadius: 22,
+              background: 'linear-gradient(135deg, rgba(0,212,170,0.12), rgba(124,92,252,0.12))',
+              border: '1px solid var(--border-color)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              marginBottom: 28, fontSize: 34,
+              boxShadow: '0 0 32px rgba(0,212,170,0.06)',
+            }}>π</div>
+
+            {/* Time-based greeting — large, friendly */}
+            <Text style={{
+              fontSize: 26, fontWeight: 600,
+              color: 'var(--text-primary)',
+              marginBottom: 10, textAlign: 'center',
+              letterSpacing: '-0.3px',
+            }}>
+              {(() => {
+                const h = new Date().getHours();
+                if (h >= 5 && h < 12) return t('chatWindow.greetMorning');
+                if (h >= 12 && h < 18) return t('chatWindow.greetAfternoon');
+                if (h >= 18 && h < 22) return t('chatWindow.greetEvening');
+                return t('chatWindow.greetNight');
+              })()}
+            </Text>
+
+            {/* Subtitle hint */}
+            <Text style={{
+              fontSize: 14, color: 'var(--text-muted)',
+              textAlign: 'center', maxWidth: 420, lineHeight: 1.6,
+            }}>
+              {t('chatWindow.welcomeHint')}
+            </Text>
+
+            {/* Current project indicator */}
+            {selectedProjectName && (
+              <Dropdown menu={{ items: projectMenuItems }} trigger={['click']}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  marginTop: 16, padding: '4px 12px', borderRadius: 8,
+                  background: 'var(--bg-surface)', border: '1px solid var(--border-color)',
+                  cursor: 'pointer', fontSize: 12, color: 'var(--text-secondary)',
+                }}>
+                  <FolderOutlined style={{ fontSize: 12, color: 'var(--accent-teal)', opacity: 0.7 }} />
+                  <span>{selectedProjectName}</span>
+                  <DownOutlined style={{ fontSize: 8, opacity: 0.5 }} />
+                </div>
+              </Dropdown>
+            )}
+
+            {/* Quick hint chips */}
+            <div style={{ display: 'flex', gap: 8, marginTop: 24, flexWrap: 'wrap', justifyContent: 'center' }}>
+              {[
+                { label: '/', desc: t('chatWindow.hintSlash') },
+                { label: '@', desc: t('chatWindow.hintMention') },
+                { label: 'Enter', desc: t('chatWindow.send') },
+              ].map((chip) => (
+                <span key={chip.label} style={{
+                  fontSize: 11, color: 'var(--text-muted)',
+                  padding: '3px 10px', borderRadius: 6,
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-color)',
+                }}>
+                  <kbd style={{ color: 'var(--text-secondary)', fontWeight: 600, marginRight: 4 }}>{chip.label}</kbd>
+                  {chip.desc}
+                </span>
+              ))}
+            </div>
           </div>
         ) : (
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 24px' }}>
-            {messages.map((msg) => {
+            {messages.filter(Boolean).map((msg) => {
               const mode = msg.metadata?.mode as InputMode | undefined;
               const modeLabel = mode ? MODE_LABELS[mode] : null;
               return (
@@ -722,6 +972,7 @@ const ChatWindow: React.FC = () => {
                   >
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
                       <span style={{ fontSize: 12, color: i === mentionIndex ? 'var(--accent-teal)' : 'var(--text-secondary)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {item.type === 'file' && <span style={{ marginRight: 4 }}>{item.description === 'directory' ? <FolderOpenOutlined style={{ fontSize: 10 }} /> : <FileOutlined style={{ fontSize: 10 }} />}</span>}
                         {item.label}
                       </span>
                       {item.description && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{item.description}</span>}
@@ -762,8 +1013,39 @@ const ChatWindow: React.FC = () => {
               }}
             />
 
-            {/* Bottom toolbar: model selector | thinking | mode | spacer | context | optimize | attach | send */}
+            {/* Bottom toolbar: project | model | thinking | mode | spacer | context | optimize | attach | send */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px 6px 10px' }}>
+              {/* Project selector (ZCode-style: folder icon + project name + dropdown) */}
+              <Dropdown
+                menu={{ items: projectMenuItems }}
+                trigger={['click']}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  style={{
+                    color: 'var(--text-secondary)',
+                    fontSize: 12,
+                    padding: '2px 8px',
+                    height: 26,
+                    borderRadius: 6,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    maxWidth: 200,
+                  }}
+                >
+                  <FolderOutlined style={{ fontSize: 11, opacity: 0.7 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {selectedProjectName || t('chatWindow.selectProject')}
+                  </span>
+                  <DownOutlined style={{ fontSize: 9, opacity: 0.5 }} />
+                </Button>
+              </Dropdown>
+
+              {/* Divider between project and model */}
+              <div style={{ width: 1, height: 14, background: 'var(--border-color)', flexShrink: 0 }} />
+
               {/* Model selector (ZCode-style: shows current model name + dropdown arrow) */}
               <Dropdown
                 menu={modelMenu}
@@ -943,6 +1225,20 @@ const ChatWindow: React.FC = () => {
             <span>
               <kbd style={{ background: 'var(--bg-surface)', padding: '1px 5px', borderRadius: 3, border: '1px solid var(--border-color)', fontSize: 9 }}>Enter</kbd> {t('chatWindow.send')} ·{' '}
               <kbd style={{ background: 'var(--bg-surface)', padding: '1px 5px', borderRadius: 3, border: '1px solid var(--border-color)', fontSize: 9 }}>Shift+Enter</kbd> {t('chatWindow.newline')}
+              {messages.length > 0 && (
+                <>
+                  {' · '}
+                  <span onClick={() => setExportModalOpen(true)} style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>
+                    <ExportOutlined style={{ fontSize: 9, marginRight: 2 }} />
+                    {t('chatWindow.export')}
+                  </span>
+                  {' · '}
+                  <span onClick={handleImportJsonl} style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>
+                    <ImportOutlined style={{ fontSize: 9, marginRight: 2 }} />
+                    {t('chatWindow.importJsonl')}
+                  </span>
+                </>
+              )}
             </span>
             <span>
               {currentModel ? `${currentModel.provider}/${currentModel.modelId}` : ''}
@@ -950,6 +1246,43 @@ const ChatWindow: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* ─── Export format modal ───────────────────────────── */}
+      <Modal
+        title={t('chatWindow.export')}
+        open={exportModalOpen}
+        onCancel={() => setExportModalOpen(false)}
+        footer={null}
+        width={340}
+        destroyOnHidden
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 0' }}>
+          <Button
+            block
+            icon={<FileOutlined />}
+            onClick={() => doExport('md')}
+            style={{ height: 44, justifyContent: 'flex-start', padding: '0 16px', fontSize: 14 }}
+          >
+            Markdown (.md)
+          </Button>
+          <Button
+            block
+            icon={<FileOutlined />}
+            onClick={() => doExport('html')}
+            style={{ height: 44, justifyContent: 'flex-start', padding: '0 16px', fontSize: 14 }}
+          >
+            HTML (.html)
+          </Button>
+          <Button
+            block
+            icon={<FileOutlined />}
+            onClick={() => doExport('json')}
+            style={{ height: 44, justifyContent: 'flex-start', padding: '0 16px', fontSize: 14 }}
+          >
+            JSON (.json)
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 };

@@ -90,11 +90,15 @@ export interface RetryInfo {
   attempt: number;
   maxAttempts?: number;
   reason?: string;
+  delayMs?: number;
+  failed?: boolean;
 }
 
 export interface QueueState {
-  active: number;
-  pending: number;
+  /** number of queued mid-turn steering messages */
+  steering: number;
+  /** number of queued follow-up messages */
+  followUp: number;
   total: number;
 }
 
@@ -111,6 +115,7 @@ interface AppState {
   piBinaryPath: string;
   piConnected: boolean;
   piMissing: boolean;
+  piCwd: string;
   messages: ChatMessage[];
   isStreaming: boolean;
   inputValue: string;
@@ -166,6 +171,7 @@ interface AppState {
   refreshContextUsage: () => Promise<void>;
   setActiveView: (view: string) => void;
   dismissRetry: () => void;
+  abortRetry: () => Promise<void>;
   dismissCompaction: () => void;
   dismissCrashRecovery: () => void;
   triggerCompaction: () => Promise<void>;
@@ -193,7 +199,35 @@ function extractDelta(event: PiEvent): string | null {
   if (e.assistantMessageEvent && typeof e.assistantMessageEvent === 'object') {
     const sub = e.assistantMessageEvent as Record<string, unknown>;
     if (sub.text_delta && typeof sub.text_delta === 'string') return sub.text_delta;
+    // Pi's AssistantMessageEvent carries the increment in `delta` (e.g. { type: 'text_delta', delta: '…' }).
+    if (sub.delta && typeof sub.delta === 'string') return sub.delta;
   }
+  return null;
+}
+
+/**
+ * Resolve pi's default provider/model for a fresh session.
+ * Prefers the live pi state (`get_state`); falls back to the persisted defaults
+ * in settings.json when pi hasn't reported a model yet.
+ */
+async function resolveDefaultModel(): Promise<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel } | null> {
+  try {
+    const state = await pi.piGetState() as any;
+    // pi's get_state returns { model: { id, provider, ... }, thinkingLevel, ... }.
+    // NOTE: the model identifier field is `id`, not `modelId`.
+    const provider = state?.model?.provider;
+    const modelId = state?.model?.id || state?.model?.modelId;
+    if (provider && modelId) {
+      const thinkingLevel = state?.thinkingLevel as ThinkingLevel | undefined;
+      return { provider, modelId, thinkingLevel };
+    }
+  } catch { /* fall through to settings.json */ }
+  try {
+    const s = await piCfg.piReadSettings() as any;
+    if (s?.defaultProvider && s?.defaultModel) {
+      return { provider: s.defaultProvider, modelId: s.defaultModel };
+    }
+  } catch { /* no default available */ }
   return null;
 }
 
@@ -203,6 +237,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   piBinaryPath: '',
   piConnected: false,
   piMissing: false,
+  piCwd: '',
   messages: [],
   isStreaming: false,
   inputValue: '',
@@ -249,12 +284,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         piBinaryPath: info.binaryPath,
         piConnected: !!info.binaryPath,
         piMissing: !info.binaryPath,
+        piCwd: info.cwd || '',
       });
 
       if (info.binaryPath) {
         get().loadSessions();
         get().loadSettings();
         get().loadAvailableModels();
+        // Read pi's default provider/model directly so a plain webview reload
+        // (which never re-fires the one-shot `bootstrap` event) still shows the
+        // real default instead of "no model" / the first available model.
+        resolveDefaultModel().then((model) => {
+          if (model) {
+            set({ currentModel: { provider: model.provider, modelId: model.modelId } });
+            if (model.thinkingLevel) set({ thinkingLevel: model.thinkingLevel });
+          }
+        });
       }
     } catch (e) {
       console.error('Failed to initialize:', e);
@@ -345,15 +390,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   newSession: async () => {
     try {
-      set({ messages: [], currentSessionId: null, availableModels: [] });
+      set({ messages: [], currentSessionId: null });
       await pi.piNewSession();
-      // Get current model from pi state
-      try {
-        const state = await pi.piGetState() as any;
-        if (state?.model?.provider && state?.model?.modelId) {
-          set({ currentModel: { provider: state.model.provider, modelId: state.model.modelId } });
-        }
-      } catch {}
+      // A fresh session inherits pi's default provider/model. Refresh the model
+      // list and read the default back (with a settings.json fallback) so the
+      // selector shows pi's real default instead of "no model".
+      get().loadAvailableModels();
+      const model = await resolveDefaultModel();
+      if (model) {
+        set({ currentModel: { provider: model.provider, modelId: model.modelId } });
+        if (model.thinkingLevel) set({ thinkingLevel: model.thinkingLevel });
+      }
     } catch (e) { console.error('Failed to create new session:', e); }
   },
 
@@ -403,6 +450,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     try {
+      // Prefer the local session JSONL file: it's an instant, lock-free disk read,
+      // so history renders immediately even when the pi RPC is slow or unresponsive.
+      // (pi_get_messages holds the global bridge lock for its whole duration and can
+      //  time out, which previously left the UI stuck on "loading messages".)
+      if (sessionPath) {
+        try {
+          const fileEntries = await pi.piReadSessionFile(sessionPath);
+          if (fileEntries && fileEntries.length > 0) {
+            const model = extractModel(fileEntries);
+            set({ messages: toMessages(fileEntries), ...(model ? { currentModel: model } : {}) });
+            return;
+          }
+        } catch (e) {
+          console.warn('Local session file read failed, falling back to get_messages RPC:', e);
+        }
+      }
+
+      // Fallback: ask pi for the message list (used for sessions with no file yet).
       const result = await pi.piGetMessages();
       let rawMessages: any[] | null = null;
       if (Array.isArray(result)) { rawMessages = result; }
@@ -417,20 +482,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ messages: toMessages(rawMessages), ...(model ? { currentModel: model } : {}) });
         return;
       }
-      if (sessionPath) {
-        const fileEntries = await pi.piReadSessionFile(sessionPath);
-        if (fileEntries && fileEntries.length > 0) {
-          const model = extractModel(fileEntries);
-          set({ messages: toMessages(fileEntries), ...(model ? { currentModel: model } : {}) });
-          return;
-        }
-      }
       set({ messages: [] });
     } catch (e) {
       console.error('loadMessages failed:', e);
-      if (sessionPath) {
-        try { const fileEntries = await pi.piReadSessionFile(sessionPath); if (fileEntries && fileEntries.length > 0) { set({ messages: toMessages(fileEntries) }); return; } } catch {}
-      }
       set({ messages: [] });
     } finally { set({ loadingMessages: false }); }
   },
@@ -542,6 +596,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   dismissRetry: () => { set({ retryInfo: null }); },
+  abortRetry: async () => {
+    // Optimistically clear the banner, then ask pi to stop retrying.
+    set({ retryInfo: null });
+    try {
+      await pi.piAbortRetry();
+    } catch (e) {
+      console.warn('abort_retry RPC failed (non-critical):', e);
+    }
+  },
   dismissCompaction: () => { set({ compactionInfo: null }); },
   dismissCrashRecovery: () => { set({ crashRecovery: null }); },
 
@@ -565,18 +628,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       case 'bootstrap':
         set({ piConnected: true, piMissing: false, piVersion: e.piVersion as string || '', crashRecovery: null });
         get().loadAvailableModels();
-        pi.piGetState().then((state: any) => {
-          if (state?.model?.provider && state?.model?.modelId) {
-            set({ currentModel: { provider: state.model.provider, modelId: state.model.modelId } });
-          } else {
-            // Fallback: use default from settings.json
-            piCfg.piReadSettings().then((s: any) => {
-              if (s.defaultProvider && s.defaultModel) {
-                set({ currentModel: { provider: s.defaultProvider, modelId: s.defaultModel } });
-              }
-            }).catch(() => {});
+        // Read pi's default provider/model (get_state, with settings.json fallback).
+        resolveDefaultModel().then((model) => {
+          if (model) {
+            set({ currentModel: { provider: model.provider, modelId: model.modelId } });
+            if (model.thinkingLevel) set({ thinkingLevel: model.thinkingLevel });
           }
-        }).catch(() => {});
+        });
         break;
       case 'binary_missing':
         set({ piMissing: true, piConnected: false, isStreaming: false });
@@ -644,48 +702,62 @@ export const useAppStore = create<AppState>((set, get) => ({
       case 'error':
         console.error('Pi error event:', e.error);
         break;
-      // M3: retry / queue / compaction events
-      case 'auto_retry_started': case 'auto_retry': {
-        const attempt = (e.attempt as number) || (e.retryCount as number) || 1;
-        const max = (e.maxAttempts as number) || (e.maxRetries as number);
-        const reason = (e.reason as string) || (e.error as string);
-        set({ retryInfo: { visible: true, attempt, maxAttempts: max, reason } });
+      // M3: queue events — Pi emits the full pending queues on every change.
+      case 'queue_update': {
+        // Payload: { steering: string[]; followUp: string[] }
+        const steering = Array.isArray(e.steering) ? (e.steering as unknown[]).length : (e.steering as number) || 0;
+        const followUp = Array.isArray(e.followUp) ? (e.followUp as unknown[]).length : (e.followUp as number) || 0;
+        const total = steering + followUp;
+        set({ queueState: total > 0 ? { steering, followUp, total } : null });
         break;
       }
-      case 'auto_retry_succeeded':
-        set({ retryInfo: null });
-        break;
-      case 'auto_retry_failed': case 'auto_retry_exhausted': {
-        const attempt = (e.attempt as number) || (e.retryCount as number) || 1;
-        const reason = (e.reason as string) || (e.error as string) || 'Retries exhausted';
-        set({ retryInfo: { visible: true, attempt, reason } });
-        break;
-      }
-      case 'queue_update': case 'queue_state': {
-        const active = (e.active as number) ?? 0;
-        const pending = (e.pending as number) ?? 0;
-        const total = (e.total as number) ?? (active + pending);
-        set({ queueState: total > 0 ? { active, pending, total } : null });
+      // M3: retry events — Pi emits auto_retry_start / auto_retry_end.
+      // summarization_retry_scheduled shares the same shape during compaction retries.
+      case 'auto_retry_start':
+      case 'summarization_retry_scheduled': {
+        const attempt = (e.attempt as number) || 1;
+        const max = e.maxAttempts as number | undefined;
+        const reason = (e.errorMessage as string) || undefined;
+        const delayMs = e.delayMs as number | undefined;
+        set({ retryInfo: { visible: true, attempt, maxAttempts: max, reason, delayMs, failed: false } });
         break;
       }
-      case 'compaction_started':
+      case 'auto_retry_end': {
+        // Payload: { success: boolean; attempt: number; finalError?: string }
+        if (e.success === true) {
+          set({ retryInfo: null });
+        } else {
+          const prev = get().retryInfo;
+          const attempt = (e.attempt as number) || prev?.attempt || 1;
+          const reason = (e.finalError as string) || prev?.reason || 'Retries exhausted';
+          set({ retryInfo: { visible: true, attempt, maxAttempts: prev?.maxAttempts, reason, failed: true } });
+        }
+        break;
+      }
+      // M3: compaction events — Pi emits compaction_start / compaction_end
+      // (covers both manual and automatic compaction).
+      case 'compaction_start':
         set({ compactionInfo: { visible: true, phase: 'started', message: 'Compacting context…' } });
         break;
-      case 'compaction_progress': {
-        const progress = (e.progress as number) || (e.percent as number);
-        set({ compactionInfo: { visible: true, phase: 'progress', progress, message: 'Compacting context…' } });
+      case 'compaction_end': {
+        // Payload: { reason; result?; aborted: boolean; willRetry: boolean; errorMessage? }
+        const aborted = e.aborted === true;
+        const errMsg = e.errorMessage as string | undefined;
+        const willRetry = e.willRetry === true;
+        if (errMsg || aborted) {
+          set({ compactionInfo: { visible: true, phase: 'failed', message: errMsg || 'Compaction aborted' } });
+          // If pi will retry (summarization_retry), keep the banner; otherwise auto-dismiss.
+          if (!willRetry) setTimeout(() => set({ compactionInfo: null }), 4000);
+        } else {
+          set({ compactionInfo: { visible: true, phase: 'completed', message: 'Context compacted' } });
+          setTimeout(() => {
+            if (get().compactionInfo?.phase === 'completed') set({ compactionInfo: null });
+          }, 2500);
+        }
+        // Context window usage changed after compaction — refresh the indicator.
+        get().refreshContextUsage();
         break;
       }
-      case 'compaction_completed': case 'compaction_success':
-        set({ compactionInfo: { visible: true, phase: 'completed', message: 'Context compacted' } });
-        setTimeout(() => {
-          if (get().compactionInfo?.phase === 'completed') set({ compactionInfo: null });
-        }, 2500);
-        break;
-      case 'compaction_failed': case 'compaction_error':
-        set({ compactionInfo: { visible: true, phase: 'failed', message: (e.error as string) || 'Compaction failed' } });
-        setTimeout(() => set({ compactionInfo: null }), 4000);
-        break;
       case 'new_chat':
         get().newSession().catch(() => {});
         break;

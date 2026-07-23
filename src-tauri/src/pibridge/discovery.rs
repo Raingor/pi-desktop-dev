@@ -165,6 +165,7 @@ fn get_pi_version(path: &str) -> Result<String, String> {
     let output = std::process::Command::new(path)
         .arg("--version")
         .env("PATH", pi_node_path())
+        .env_remove("NODE_OPTIONS")
         .output()
         .map_err(|e| format!("Failed to run pi --version: {}", e))?;
 

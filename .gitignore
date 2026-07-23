@@ -31,3 +31,7 @@ src-tauri/target/
 .env
 .env.local
 .env.*.local
+
+# Agent / conversation artifacts
+.workbuddy/
+conversation-*.txt

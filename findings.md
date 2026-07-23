@@ -106,11 +106,25 @@
 - Ant Design Image 组件支持 `preview` 配置预览行为
 
 ## 更新后待办优先级
-1. **P0** — crash 恢复（auto-restart + switch_session）
-2. **P1** — M3 完整事件连线 UI（queue chip、retry banner、compaction banner）
+1. ~~**P0** — crash 恢复（auto-restart + switch_session）~~ ✅ 已完成
+2. ~~**P1** — M3 完整事件连线 UI（queue chip、retry banner 含 abort_retry 取消、compaction banner）~~ ✅ 已完成
 3. **P2** — llama.cpp provider 支持文档
 4. **P2** — 快捷键 `Ctrl+Shift+Space`（show/hide）
-5. **P2** — 桌面通知（M7）
+5. ~~**P2** — 桌面通知（M7）~~ ✅ 已完成
 6. **P3** — 代码/PDF 文件预览
-7. **P3** — Session fork/clone UI
-8. **P3** — 导出/导入（M8）
+7. ~~**P3** — Session fork/clone UI~~ ✅ 已完成（fork）
+8. ~~**P3** — 导出/导入（M8）~~ ✅ 已完成
+
+## Session 3 Learnings (2026-07-23)
+
+### @mention 文件搜索递归化
+- `list_directory_files` 原为非递归，只扫顶层目录
+- 重构：有搜索条件时递归搜索 4 层，结果按相对路径显示（`src/components/README.md`）
+- 无搜索条件时保持浅层扫描（性能考量）
+- 最多返回 100 条结果，隐藏文件始终跳过
+
+### M8 导出/导入前端对接
+- `/export` 斜杠命令拦截 + 格式选择 Modal
+- 支持快捷参数：`/export html`、`/export md`、`/export json`
+- 底部信息栏新增导出/导入按钮
+- 导入通过 `<input type="file">` 选择 .jsonl 文件后调用 `importJsonl`

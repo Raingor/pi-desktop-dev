@@ -47,13 +47,13 @@ npm run tauri build
 | 里程碑 | 状态 |
 |---------|------|
 | M0 - 项目脚手架 | ✅ 完成 |
-| M0.5 - PiBridge 模块 | 🔄 骨架完成 |
-| M1 - 核心聊天 UI | 🔄 骨架完成 |
-| M2 - Provider 配置 | ⬜ 未开始 |
-| M3 - 实时流与队列 | ⬜ 未开始 |
-| M4 - 文件附件 | ⬜ 未开始 |
+| M0.5 - PiBridge 模块 | ✅ 完成 |
+| M1 - 核心聊天 UI | ✅ 完成 |
+| M2 - Provider 配置 | ✅ 完成 |
+| M3 - 实时流与队列 | ✅ 完成 |
+| M4 - 文件附件 | ✅ 完成 |
 | M5 - 系统托盘 | ✅ 完成 |
-| M6 - Session 管理 | ⬜ 未开始 |
+| M6 - Session 管理 | ✅ 完成 |
 | M7-M12 | ⬜ 未开始 |
 
 详见 [plan.md](plan.md) 和 [task_plan.md](task_plan.md)。

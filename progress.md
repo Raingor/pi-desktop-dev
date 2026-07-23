@@ -127,6 +127,32 @@
 | cargo check | - | Compilation success | 17 warnings, 0 errors | ✓ |
 | cargo build --release | - | Build success | 1m32s, 12.5MB binary | ✓ |
 | tsc --noEmit | - | No errors | 0 errors | ✓ |
+
+## Session: 2026-07-23
+
+### M7: 桌面通知与托盘角标
+- **Status:** complete (此前已实现)
+
+**已存在的代码（无需修改）：**
+- `App.tsx` — `win.onFocusChanged` 焦点跟踪 + `message_end` 事件触发桌面通知
+- `App.tsx` — `useEffect([unreadCount])` 自动更新托盘角标
+- `appStore.ts` — `unreadCount` 状态 + `incrementUnreadAction` / `markAllRead`
+
+### M8: 导出/导入前端对接
+- **Status:** complete
+
+**Actions taken:**
+- `src/components/ChatWindow.tsx`:
+  - `handleSend` 拦截 `/export` + `/compact` + `/clear` 斜杠命令，不发送给 Pi
+  - `/export` 支持格式参数：`/export html`、`/export md`、`/export json`
+  - 无格式参数时弹出格式选择 Modal（MD / HTML / JSON）
+  - 底部信息栏添加导出/导入快速入口按钮
+  - `handleImportJsonl` 通过隐藏 `<input type="file">` 选取 .jsonl 文件后调用 `importJsonl`
+- `src/i18n/locales/*.ts` — 4 语言添加 `exportSuccess/exportFailed/importSuccess/importFailed` 提示键
+
+**Build verification:**
+- `npx tsc --noEmit` — ✓ 0 errors
+- `npx vite build` — ✓ 5679 modules, 7.05s
 | vite build | - | Build success | 3.08s, 918KB JS | ✓ |
 | npm run tauri build | - | DMG + .app | DMG + .app 生成成功 | ✓ |
 | 应用启动 | ./pi-desktop | 窗口显示 + Pi 状态 | 进程运行，PID 45488 | ✓ |
@@ -148,7 +174,7 @@
 | Question | Answer |
 |----------|--------|
 | Where am I? | Phase 3 — 核心功能实现（大部分功能已完成） |
-| Where am I going? | M3 完整事件连线（queue/compaction/retry）、M6 Session fork/clone、M7 通知、跨平台测试 |
+| Where am I going? | M3 完整事件连线（queue/compaction/retry）✅、M7 通知、跨平台测试 |
 | What's the goal? | 构建完整的 Pi-Agent 桌面客户端 |
 | What have I learned? | 见 findings.md |
 | What have I done? | 见下方 Session 日志 |
@@ -223,3 +249,45 @@
 | tsc --noEmit | ✓ 0 errors |
 | vite build | ✓ 957KB JS, 3.6s |
 | npm run tauri build | ✓ DMG + .app 生成 |
+
+---
+
+## Session: 2026-07-23
+
+### M3 收尾：事件 UI 连线修复 + abort_retry 取消按钮
+- **Status:** ✅ 完成
+- **核心发现（连线断裂，非 UI 缺失）：** 队列芯片/重试横幅/压缩横幅的 UI 与 store 状态早已存在，但 store 监听的事件名/字段名都是猜的，与 Pi 官方 `AgentSessionEvent` schema 不匹配，导致 UI 永不触发。
+- **对照官方 schema 修复的三组事件：**
+  - `queue_update { steering[], followUp[] }` — 改为读数组长度（旧码读 `active/pending/total`）
+  - `auto_retry_start / auto_retry_end / summarization_retry_scheduled` — 改为正确事件名（旧码用 `auto_retry_started/succeeded/failed`），`auto_retry_end success:false` 触发失败红色态
+  - `compaction_start / compaction_end` — 改为正确事件名（旧码用 `compaction_started/completed`），`end` 时刷新 context usage
+  - `extractDelta()` 补充 `delta` 字段兑底
+- **abort_retry 取消按钮（贯通后端→前端）：**
+  - 新增 Rust 命令 `pi_abort_retry`（发送 `abort_retry` RPC，fire-and-forget），已注册进 `invoke_handler`
+  - `piBridge.ts` 新增 `piAbortRetry()`；store 新增 `abortRetry` action（乐观清空 `retryInfo` 后调 RPC）
+  - 重试横幅：重试进行中显示琥珀色「取消」按钮；已失败态保留 X 关闭
+- **Files modified:**
+  - `src-tauri/src/lib.rs` — `pi_abort_retry` 命令 + 注册
+  - `src/services/piBridge.ts` — `piAbortRetry()`
+  - `src/stores/appStore.ts` — 三组事件解析修复 + `abortRetry` action + `extractDelta` 兑底
+  - `src/components/ChatWindow.tsx` — queue chip / retry banner 渲染 + 取消按钮
+  - `src/i18n/locales/{en,zh-CN,zh-TW,ja}.ts` — queueChip/queueTooltip/retryFailed/retryIn/retryCancel 文案
+
+### 文档状态同步
+- **Status:** ✅ 完成
+- 以代码实际状态为准，修正 `task_plan.md`、`README.md`、`plan.md`、`progress.md`、`findings.md` 中过时的里程碑标记（M0.5/M1/M2/M3/M4/M6 均已完成）
+
+### 构建验证
+- **Status:** ✅ 通过
+- cargo check: 0 errors（仅存量 snake_case 警告）
+- tsc --noEmit: 0 errors
+- vite build: 成功（6.25s, 1823KB JS）
+- vitest run: 14/14 通过
+
+### Test Results
+| Test | Status |
+|------|--------|
+| cargo check | ✓ 0 errors |
+| tsc --noEmit | ✓ 0 errors |
+| vite build | ✓ 1823KB JS, 6.25s |
+| vitest run | ✓ 14/14 |
