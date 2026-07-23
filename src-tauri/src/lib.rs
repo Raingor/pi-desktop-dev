@@ -30,10 +30,12 @@ async fn pi_bootstrap(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    let bp = bridge.binary_path();
+    let pv = bridge.pi_version();
 
     Ok(serde_json::json!({
-        "binaryPath": bridge.binary_path(),
-        "piVersion": bridge.pi_version(),
+        "binaryPath": bp,
+        "piVersion": pv,
         "sessionId": null,
         "cwd": null,
     }))
@@ -506,15 +508,10 @@ async fn pi_restart(
 // ─── App Setup ────────────────────────────────────────────────
 
 fn setup_rust_logging() {
-    #[cfg(debug_assertions)]
-    {
-        // Use log crate's built-in logger or a simple stderr logger
-        #[cfg(feature = "env_logger")]
-        let _ = env_logger::builder()
-            .filter_level(log::LevelFilter::Info)
-            .is_test(false)
-            .try_init();
-    }
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .is_test(false)
+        .try_init();
 }
 
 /// Get the app data directory for current platform
@@ -572,6 +569,12 @@ pub fn run() {
     };
 
     let bridge = Arc::new(Mutex::new(PiBridge::new()));
+    // Set binary info immediately so pi_bootstrap returns the discovered path
+    // without waiting for the background spawn thread to complete.
+    {
+        let mut b = bridge.lock().unwrap();
+        b.set_binary_info(binary_path.clone(), pi_version.clone());
+    }
     let database_for_setup = database.clone();
     let tray_badge = Arc::new(AtomicU32::new(0));
     let restart_attempt = Arc::new(AtomicU32::new(0));
@@ -706,37 +709,44 @@ pub fn run() {
                 let pv = pi_version.clone();
                 let h = handle.clone();
                 std::thread::spawn(move || {
-                    let mut b = bridge_clone.lock().unwrap();
-                    let spawn_result = {
-                        b.process.lock().unwrap().spawn(&bp)
-                    };
-                    match spawn_result {
-                        Ok(()) => {
-                            b.set_binary_info(bp.clone(), pv.clone());
-                            log::info!("Pi process spawned successfully");
+                    // Lock, spawn, set up reader — then RELEASE the lock before emit
+                    // to avoid deadlock: emit() may block on the webview thread,
+                    // and pi_bootstrap needs the lock to return binaryPath.
+                    let spawn_ok = {
+                        let mut b = bridge_clone.lock().unwrap();
+                        let spawn_result = b.process.lock().unwrap().spawn(&bp);
+                        match spawn_result {
+                            Ok(()) => {
+                                b.set_binary_info(bp.clone(), pv.clone());
+                                log::info!("Pi process spawned successfully");
 
-                            // Take stdout and start reader thread
-                            let stdout = b.process.lock().unwrap().take_stdout();
-                            if let Some(stdout) = stdout {
-                                let stop_signal = b.process.lock().unwrap().stop_signal();
-                                let pending = b.pending_responses();
-                                let app_h = h.clone();
-                                b.start_stdout_reader(stdout, app_h, stop_signal, pending);
-                                log::info!("Stdout reader started");
+                                let stdout = b.process.lock().unwrap().take_stdout();
+                                if let Some(stdout) = stdout {
+                                    let stop_signal = b.process.lock().unwrap().stop_signal();
+                                    let pending = b.pending_responses();
+                                    let app_h = h.clone();
+                                    b.start_stdout_reader(stdout, app_h, stop_signal, pending);
+                                    log::info!("Stdout reader started");
+                                }
+                                true
                             }
+                            Err(e) => {
+                                log::error!("Failed to spawn pi: {}", e);
+                                false
+                            }
+                        }
+                    }; // Lock released here
 
-                            let _ = h.emit("pi:event", serde_json::json!({
-                                "type": "bootstrap",
-                                "binaryPath": bp,
-                                "piVersion": pv,
-                            }));
-                        }
-                        Err(e) => {
-                            log::error!("Failed to spawn pi: {}", e);
-                            let _ = h.emit("pi:binary_missing", serde_json::json!({
-                                "searched": ["PATH", "PI_BINARY"]
-                            }));
-                        }
+                    if spawn_ok {
+                        let _ = h.emit("pi:event", serde_json::json!({
+                            "type": "bootstrap",
+                            "binaryPath": bp,
+                            "piVersion": pv,
+                        }));
+                    } else {
+                        let _ = h.emit("pi:binary_missing", serde_json::json!({
+                            "searched": ["PATH", "PI_BINARY"]
+                        }));
                     }
                 });
             } else {

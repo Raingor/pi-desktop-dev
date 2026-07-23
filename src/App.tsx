@@ -41,6 +41,7 @@ const App: React.FC = () => {
 
     const unlistenBinary = onBinaryMissing((payload) => {
       console.log('Pi binary missing:', payload.searched);
+      useAppStore.setState({ piMissing: true, piConnected: false, isStreaming: false });
     });
 
     return () => {
