@@ -458,10 +458,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setModel: async (provider: string, modelId: string) => {
-    try {
-      await pi.piSetModel(provider, modelId);
-      set({ currentModel: { provider, modelId } });
-    } catch (e) { console.error('Failed to set model:', e); }
+    // Update optimistically immediately
+    set({ currentModel: { provider, modelId } });
+    // Fire RPC in background (don't block on failure)
+    pi.piSetModel(provider, modelId).catch((e) => console.warn('set_model RPC failed (non-critical):', e));
   },
 
   loadSettings: async () => {
@@ -568,6 +568,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         pi.piGetState().then((state: any) => {
           if (state?.model?.provider && state?.model?.modelId) {
             set({ currentModel: { provider: state.model.provider, modelId: state.model.modelId } });
+          } else {
+            // Fallback: use default from settings.json
+            piCfg.piReadSettings().then((s: any) => {
+              if (s.defaultProvider && s.defaultModel) {
+                set({ currentModel: { provider: s.defaultProvider, modelId: s.defaultModel } });
+              }
+            }).catch(() => {});
           }
         }).catch(() => {});
         break;
