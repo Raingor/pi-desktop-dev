@@ -29,4 +29,16 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  build: {
+    rollupOptions: {
+      output: {
+        // Split vendor libraries into separate chunks for better caching
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+          'antd-vendor': ['antd', '@ant-design/icons'],
+        },
+      },
+    },
+  },
 }));
