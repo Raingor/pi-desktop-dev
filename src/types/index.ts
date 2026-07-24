@@ -72,6 +72,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
+  /** Streamed thinking/reasoning content (pi "thinking_delta" events), shown in a collapsible block. */
+  thinking?: string;
   timestamp: string;
   isStreaming?: boolean;
   metadata?: Record<string, unknown>;
@@ -232,7 +234,7 @@ export interface ContextUsage {
   thinkingLevel?: string;
 }
 
-export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high' | 'max';
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 // ─── Slash command & @-mention autocomplete ────────────────
 

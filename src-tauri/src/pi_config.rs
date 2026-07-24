@@ -1657,8 +1657,11 @@ fn parse_external_session_file(fp: &Path, tool: &str, project: &str) -> Option<E
         })
         .unwrap_or_default();
 
-    let preview_trimmed = if preview.len() > 120 {
-        format!("{}…", &preview[..120])
+    // Truncate by chars (not bytes) so multi-byte UTF-8 previews
+    // (e.g. Chinese) never slice mid-codepoint and panic.
+    let preview_trimmed = if preview.chars().count() > 120 {
+        let truncated: String = preview.chars().take(120).collect();
+        format!("{}…", truncated)
     } else {
         preview
     };

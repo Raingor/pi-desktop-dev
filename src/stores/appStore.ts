@@ -163,7 +163,7 @@ interface AppState {
   setInputMode: (mode: InputMode) => void;
   handlePiEvent: (event: PiEvent) => void;
   appendMessage: (msg: Partial<ChatMessage>) => void;
-  updateLastMessage: (content: string) => void;
+  appendStreamingChunk: (kind: 'thinking' | 'text', delta: string) => void;
   loadMessages: () => Promise<void>;
   loadAvailableModels: () => Promise<void>;
   setModel: (provider: string, modelId: string) => Promise<void>;
@@ -194,13 +194,23 @@ interface AppState {
 
 function extractDelta(event: PiEvent): string | null {
   const e = event as Record<string, unknown>;
+  // Top-level fields (direct text_delta / delta events)
   if (e.text_delta && typeof e.text_delta === 'string') return e.text_delta;
   if (e.delta && typeof e.delta === 'string') return e.delta;
+  if (e.text && typeof e.text === 'string') return e.text;
+  // Nested under assistantMessageEvent (message_update events from pi)
   if (e.assistantMessageEvent && typeof e.assistantMessageEvent === 'object') {
     const sub = e.assistantMessageEvent as Record<string, unknown>;
     if (sub.text_delta && typeof sub.text_delta === 'string') return sub.text_delta;
+    if (sub.text && typeof sub.text === 'string') return sub.text;
     // Pi's AssistantMessageEvent carries the increment in `delta` (e.g. { type: 'text_delta', delta: '…' }).
     if (sub.delta && typeof sub.delta === 'string') return sub.delta;
+    // Anthropic-style: delta is an object with text field
+    if (sub.delta && typeof sub.delta === 'object') {
+      const deltaObj = sub.delta as Record<string, unknown>;
+      if (deltaObj.text && typeof deltaObj.text === 'string') return deltaObj.text;
+      if (deltaObj.text_delta && typeof deltaObj.text_delta === 'string') return deltaObj.text_delta;
+    }
   }
   return null;
 }
@@ -213,14 +223,14 @@ function extractDelta(event: PiEvent): string | null {
 async function resolveDefaultModel(): Promise<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel } | null> {
   try {
     const state = await pi.piGetState() as any;
-    // pi's get_state returns { model: { id, provider, thinkingLevel, ... }, ... }.
+    // pi's get_state returns { model: { id, provider, ... }, thinkingLevel: '...', ... }.
     // NOTE: the model identifier field is `id`, not `modelId`.
-    // NOTE: thinkingLevel is nested under model, not at the top level.
+    // NOTE: thinkingLevel is at the TOP LEVEL, not nested under model.
     const provider = state?.model?.provider;
     const modelId = state?.model?.id || state?.model?.modelId;
     // Validate: skip placeholder values like "unknown" should not be treated as a real model
     if (provider && modelId && provider !== 'unknown' && modelId !== 'unknown') {
-      const thinkingLevel = state?.model?.thinkingLevel as ThinkingLevel | undefined;
+      const thinkingLevel = state?.thinkingLevel as ThinkingLevel | undefined;
       return { provider, modelId, thinkingLevel };
     }
   } catch { /* fall through to settings.json */ }
@@ -273,6 +283,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Context usage / thinking level
   contextUsage: null,
   thinkingLevel: 'medium' as ThinkingLevel,
+  // Map pi thinking levels to our UI levels for validation
+  // pi supports: off, minimal, low, medium, high, xhigh, max
   sidebarCollapsed: false,
   externalSessions: [],
 
@@ -336,9 +348,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) {
       console.error('Failed to send prompt:', e);
       set((state) => {
-        const msgs = [...state.messages];
+        const msgs = state.messages.slice();
         const last = msgs[msgs.length - 1];
-        if (last && last.role === 'assistant') { last.content = `Error: ${e}`; last.isStreaming = false; }
+        if (last && last.role === 'assistant') {
+          msgs[msgs.length - 1] = { ...last, content: `Error: ${e}`, isStreaming: false };
+        }
         return { messages: msgs, isStreaming: false };
       });
     }
@@ -383,20 +397,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   abortStream: async () => {
     try {
       await pi.piAbort();
-      set({ isStreaming: false });
+    } catch (e) {
+      console.error('Failed to abort:', e);
+    } finally {
+      // Always end the streaming UI state, even if the abort RPC failed,
+      // so the stop button never gets stuck and the cursor stops blinking.
+      set({ isStreaming: false, agentPhase: 'idle' });
       set((state) => {
-        const msgs = [...state.messages];
+        const msgs = state.messages.slice();
         const last = msgs[msgs.length - 1];
-        if (last && last.isStreaming) last.isStreaming = false;
+        if (last && last.isStreaming) {
+          msgs[msgs.length - 1] = { ...last, isStreaming: false };
+        }
         return { messages: msgs };
       });
-    } catch (e) { console.error('Failed to abort:', e); }
+    }
   },
 
   newSession: async () => {
     try {
       set({ messages: [], currentSessionId: null });
       await pi.piNewSession();
+      // Resolve the real session file path (the `session` event also does this,
+      // but we set it explicitly here to avoid a race / missing event).
+      const st = await pi.piGetState().catch(() => null) as any;
+      if (st?.sessionFile) set({ currentSessionId: st.sessionFile });
       // A fresh session inherits pi's default provider/model. Refresh the model
       // list and read the default back (with a settings.json fallback) so the
       // selector shows pi's real default instead of "no model".
@@ -665,7 +690,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   handlePiEvent: (event: PiEvent) => {
-    const delta = extractDelta(event);
     const e = event as Record<string, unknown>;
     switch (event.type) {
       case 'bootstrap':
@@ -729,32 +753,69 @@ export const useAppStore = create<AppState>((set, get) => ({
             return { isStreaming: true, agentPhase: 'thinking' };
           }
           return {
-            messages: [...state.messages, { id: msgId, role: 'assistant', content: '', timestamp: new Date().toISOString(), isStreaming: true }],
+            messages: [...state.messages, { id: msgId, role: 'assistant', content: '', thinking: '', timestamp: new Date().toISOString(), isStreaming: true }],
             isStreaming: true,
             agentPhase: 'thinking',
           };
         });
         break;
       }
-      case 'message_update': case 'text_delta':
-        if (delta) {
-          get().updateLastMessage(delta);
+      case 'message_update': case 'text_delta': {
+        // Determine whether this chunk is a *thinking* delta or a *text* delta.
+        // pi nests the increment under `assistantMessageEvent` with a `type`
+        // of `thinking_start|thinking_delta|thinking_end` or
+        // `text_start|text_delta|text_end`.
+        const sub = e.assistantMessageEvent as Record<string, unknown> | undefined;
+        const subType = typeof sub?.type === 'string' ? (sub.type as string) : undefined;
+        const isThinking = subType ? subType.startsWith('thinking') : false;
+        const d = extractDelta(event);
+        if (d) {
+          get().appendStreamingChunk(isThinking ? 'thinking' : 'text', d);
           set({ agentPhase: 'thinking' });
         }
         break;
-      case 'message_end':
-        set((state) => {
-          const msgs = [...state.messages];
-          const last = msgs[msgs.length - 1];
-          if (last && last.isStreaming) last.isStreaming = false;
-          return { messages: msgs, isStreaming: false, agentPhase: 'idle' };
-        });
-        // Increment unread if window not focused (best-effort, frontend can reset)
-        set((s) => ({ unreadCount: s.unreadCount + 1 }));
+      }
+      case 'message_end': {
+        // pi emits `message_end` for BOTH user and assistant messages.
+        // Only the assistant message_end should end the streaming state and
+        // count as an unread reply. The user message_end is just the echo of
+        // the prompt we already added optimistically — ignoring it prevents
+        // the stop button from vanishing and `isStreaming` from flipping false
+        // before pi even starts generating the assistant reply.
+        const lastMsg = get().messages[get().messages.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          set((state) => {
+            const msgs = state.messages.slice();
+            const last = msgs[msgs.length - 1];
+            if (last && last.isStreaming) {
+              msgs[msgs.length - 1] = { ...last, isStreaming: false };
+            }
+            return { messages: msgs, isStreaming: false, agentPhase: 'idle' };
+          });
+          // Increment unread only for assistant replies (best-effort; reset on focus)
+          set((s) => ({ unreadCount: s.unreadCount + 1 }));
+        }
         break;
-      case 'session':
-        set({ currentSessionId: (e.id as string) || null });
+      }
+      case 'session': {
+        // pi emits `session` when a new session branch is created. Its `id` is a
+        // session UUID, NOT a file path. We resolve the real file path from
+        // get_state().sessionFile and track that as currentSessionId — otherwise
+        // loadMessages() would try to read a UUID as a path and return empty,
+        // making the conversation vanish after switching sessions.
+        const sid = e.id as string | undefined;
+        pi.piGetState().then((st: any) => {
+          const file = st?.sessionFile as string | undefined;
+          if (file) {
+            set({ currentSessionId: file });
+            get().loadSessions();
+            get().loadMessages();
+          } else if (sid) {
+            set({ currentSessionId: sid });
+          }
+        }).catch(() => { if (sid) set({ currentSessionId: sid }); });
         break;
+      }
       case 'error':
         console.error('Pi error event:', e.error);
         set({ isStreaming: false, agentPhase: 'idle' });
@@ -769,12 +830,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           const errorMsg = (e.error as string) || (e.errorMessage as string) || 'Unknown error';
           console.error('Pi command error response:', errorMsg);
           set((state) => {
-            const msgs = [...state.messages];
+            const msgs = state.messages.slice();
             const last = msgs[msgs.length - 1];
             // If there's an empty streaming assistant message, replace it with the error
             if (last && last.role === 'assistant' && last.isStreaming && !last.content) {
-              last.content = `⚠️ ${errorMsg}`;
-              last.isStreaming = false;
+              msgs[msgs.length - 1] = { ...last, content: `⚠️ ${errorMsg}`, isStreaming: false };
             } else if (!last || last.role !== 'assistant' || !last.isStreaming) {
               // No streaming assistant message — add an error message
               msgs.push({ id: crypto.randomUUID(), role: 'assistant', content: `⚠️ ${errorMsg}`, timestamp: new Date().toISOString(), isStreaming: false });
@@ -853,19 +913,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({ messages: [...state.messages, { id: msg.id || crypto.randomUUID(), role: msg.role || 'assistant', content: msg.content || '', timestamp: msg.timestamp || new Date().toISOString(), isStreaming: msg.isStreaming, metadata: msg.metadata }] }));
   },
 
-  updateLastMessage: (content: string) => {
+  // Append a streamed chunk to the last assistant message. Uses an IMMUTABLE
+  // update (new message object) so React re-renders the bubble — mutating the
+  // message in place would leave MessageBubble's memoized reference unchanged
+  // and the streamed text/thinking would never appear.
+  appendStreamingChunk: (kind: 'thinking' | 'text', delta: string) => {
     set((state) => {
-      const msgs = [...state.messages];
-      const last = msgs[msgs.length - 1];
-      // Only append to an existing assistant streaming message.
-      // If the last message is not an assistant streaming message (e.g., it's the
-      // user's message because message_start for assistant hasn't arrived yet),
-      // create a new assistant message to hold the streaming content.
-      if (last && last.role === 'assistant' && last.isStreaming) {
-        last.content += content;
-      } else {
-        msgs.push({ id: crypto.randomUUID(), role: 'assistant', content, timestamp: new Date().toISOString(), isStreaming: true });
+      const msgs = state.messages.slice();
+      let last = msgs[msgs.length - 1];
+      // No streaming assistant message yet (e.g. message_start was missed) —
+      // create one so the chunk has a home.
+      if (!last || last.role !== 'assistant' || !last.isStreaming) {
+        const newMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: '',
+          thinking: '',
+          timestamp: new Date().toISOString(),
+          isStreaming: true,
+        };
+        msgs.push(newMsg);
+        last = newMsg;
+        return { messages: msgs };
       }
+      const updated: ChatMessage = { ...last };
+      if (kind === 'thinking') {
+        updated.thinking = (last.thinking || '') + delta;
+      } else {
+        updated.content = last.content + delta;
+      }
+      msgs[msgs.length - 1] = updated;
       return { messages: msgs };
     });
   },

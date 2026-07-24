@@ -48,12 +48,14 @@ impl PiProcess {
     /// Spawn `pi --mode rpc` with the given binary path.
     /// Does NOT read stdout — that is done externally via take_stdout + reader thread.
     /// Automatically extends PATH so Node.js scripts find the `node` interpreter.
-    pub fn spawn(&mut self, binary_path: &str) -> Result<(), String> {
+    /// If `cwd` is provided, pi runs in that directory (determines session storage path).
+    pub fn spawn(&mut self, binary_path: &str, cwd: Option<&str>) -> Result<(), String> {
         let home = std::env::var("HOME").unwrap_or_else(|_| {
             format!("/Users/{}", std::env::var("USER").unwrap_or_else(|_| "root".to_string()))
         });
 
-        log::info!("[pi spawn] binary_path={}, HOME={}, PATH={}", binary_path, &home, Self::pi_path());
+        let working_dir = cwd.unwrap_or(&home);
+        log::info!("[pi spawn] binary_path={}, cwd={}, HOME={}, PATH={}", binary_path, working_dir, &home, Self::pi_path());
 
         let mut child = Command::new(binary_path)
             .arg("--mode")
@@ -62,7 +64,7 @@ impl PiProcess {
             .env("HOME", &home)
             .env("USER", std::env::var("USER").unwrap_or_else(|_| "root".to_string()))
             .env_remove("NODE_OPTIONS")
-            .current_dir(&home)
+            .current_dir(working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -150,11 +152,11 @@ impl PiProcess {
 
     /// Restart pi process with the same binary path. Returns Ok(()) on success.
     /// Caller should re-take stdout and re-start reader thread afterwards.
-    pub fn restart(&mut self, binary_path: &str) -> Result<(), String> {
+    pub fn restart(&mut self, binary_path: &str, cwd: Option<&str>) -> Result<(), String> {
         self.kill();
         // Brief pause to let OS reclaim resources
         std::thread::sleep(std::time::Duration::from_millis(200));
-        self.spawn(binary_path)
+        self.spawn(binary_path, cwd)
     }
 
     /// Get the last known session file path (for crash recovery).

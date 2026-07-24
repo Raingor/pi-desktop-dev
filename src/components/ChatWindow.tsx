@@ -7,7 +7,7 @@ import { useAppStore, InputMode } from '../stores/appStore';
 import type { ThinkingLevel, SlashCommand, MentionItem, ProjectGroup } from '../types';
 import { PlusIcon, SendIcon, StopIcon } from './icons';
 import MessageBubble from './MessageBubble';
-import { pickDirectory, listDirectoryFiles } from '../services/piBridge';
+import { pickDirectory, listDirectoryFiles, piSwitchCwd } from '../services/piBridge';
 import { piListSessionsDetailed } from '../services/piConfigService';
 
 const { Text } = Typography;
@@ -67,13 +67,15 @@ function detectLanguage(name: string): string | undefined {
   return map[ext];
 }
 
-const THINKING_LEVELS: ThinkingLevel[] = ['none', 'low', 'medium', 'high', 'max'];
+const THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 const THINKING_LABEL_KEYS: Record<ThinkingLevel, string> = {
-  none: 'chatWindow.thinkNone',
+  off: 'chatWindow.thinkOff',
+  minimal: 'chatWindow.thinkMinimal',
   low: 'chatWindow.thinkLow',
   medium: 'chatWindow.thinkMedium',
   high: 'chatWindow.thinkHigh',
+  xhigh: 'chatWindow.thinkXhigh',
   max: 'chatWindow.thinkMax',
 };
 
@@ -202,6 +204,19 @@ const ChatWindow: React.FC = () => {
     return found?.projectName || selectedProjectPath.split('/').pop() || '';
   }, [knownProjects, selectedProjectPath]);
 
+  // Switch project: update UI, restart pi in new cwd, create new session
+  const handleProjectSwitch = useCallback((path: string) => {
+    if (path === selectedProjectPath) return;
+    setSelectedProjectPath(path);
+    // Restart pi in the new working directory so sessions are stored correctly
+    piSwitchCwd(path).then(() => {
+      // Create a fresh session in the new directory
+      newSession();
+    }).catch((e) => {
+      console.error('Failed to switch pi cwd:', e);
+    });
+  }, [selectedProjectPath, newSession]);
+
   const projectMenuItems = useMemo(() => {
     const items = knownProjects.map((g) => ({
       key: g.projectPath,
@@ -216,7 +231,7 @@ const ChatWindow: React.FC = () => {
           </span>
         </div>
       ),
-      onClick: () => setSelectedProjectPath(g.projectPath),
+      onClick: () => handleProjectSwitch(g.projectPath),
     }));
     items.push({
       key: '__open_folder__',
@@ -229,7 +244,7 @@ const ChatWindow: React.FC = () => {
         try {
           const path = await pickDirectory();
           if (path) {
-            setSelectedProjectPath(path);
+            handleProjectSwitch(path);
             // Add to known projects if not already there
             if (!knownProjects.find(g => g.projectPath === path)) {
               setKnownProjects(prev => [{ projectPath: path, projectName: path.split('/').pop() || path, sessions: [], totalSessions: 0, lastActive: '' }, ...prev]);
@@ -1232,13 +1247,13 @@ const ChatWindow: React.FC = () => {
                     type="text"
                     size="small"
                     style={{
-                      color: thinkingLevel === 'none' ? 'var(--text-muted)' : 'var(--accent-purple)',
+                      color: thinkingLevel === 'off' ? 'var(--text-muted)' : 'var(--accent-purple)',
                       fontSize: 11,
                       padding: '2px 8px',
                       height: 26,
                       borderRadius: 6,
-                      background: thinkingLevel === 'none' ? 'transparent' : 'rgba(124,92,252,0.12)',
-                      border: thinkingLevel === 'none' ? '1px solid var(--border-color)' : '1px solid rgba(124,92,252,0.3)',
+                      background: thinkingLevel === 'off' ? 'transparent' : 'rgba(124,92,252,0.12)',
+                      border: thinkingLevel === 'off' ? '1px solid var(--border-color)' : '1px solid rgba(124,92,252,0.3)',
                       fontWeight: 500,
                       display: 'flex',
                       alignItems: 'center',

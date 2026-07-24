@@ -146,6 +146,11 @@ export async function restartPiProcess(): Promise<void> {
   return invoke('pi_restart');
 }
 
+/** Switch pi process to a different working directory (restarts pi with new cwd). */
+export async function piSwitchCwd(cwd: string): Promise<void> {
+  return invoke('pi_switch_cwd', { cwd });
+}
+
 // ─── Event Listeners ──────────────────────────────────────────
 
 export function onPiEvent(callback: (event: PiEvent) => void) {

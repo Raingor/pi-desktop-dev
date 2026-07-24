@@ -717,7 +717,7 @@ async fn pi_restart(
     let mut bridge = state.bridge.lock().map_err(|e| e.to_string())?;
     state.restart_attempt.fetch_add(1, Ordering::SeqCst);
     let attempt = state.restart_attempt.load(Ordering::SeqCst);
-    bridge.restart_with_recovery(app.clone()).map_err(|e| {
+    bridge.restart_with_recovery(app.clone(), None).map_err(|e| {
         // Emit process_died with restart_attempt so frontend can show banner
         let _ = app.emit("pi:event", serde_json::json!({
             "type": "process_died",
@@ -727,6 +727,20 @@ async fn pi_restart(
         e
     })?;
     state.restart_attempt.store(0, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Switch pi process to a different working directory.
+/// Restarts pi with the new cwd so sessions are stored under the correct project.
+#[tauri::command]
+async fn pi_switch_cwd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    cwd: String,
+) -> Result<(), String> {
+    log::info!("[pi_switch_cwd] switching to cwd: {}", cwd);
+    let mut bridge = state.bridge.lock().map_err(|e| e.to_string())?;
+    bridge.restart_with_recovery(app.clone(), Some(&cwd))?;
     Ok(())
 }
 
@@ -949,7 +963,7 @@ pub fn run() {
                         if needs_restart {
                             log::warn!("Auto-restart attempt #{}", attempt);
                             let mut b = bridge_clone.lock().unwrap();
-                            match b.restart_with_recovery(handle_clone.clone()) {
+                            match b.restart_with_recovery(handle_clone.clone(), None) {
                                 Ok(()) => {
                                     log::info!("Auto-restart succeeded");
                                     attempt_counter.store(0, Ordering::SeqCst);
@@ -996,7 +1010,7 @@ pub fn run() {
                     // and pi_bootstrap needs the lock to return binaryPath.
                     let spawn_ok = {
                         let mut b = bridge_clone.lock().unwrap();
-                        let spawn_result = b.process.lock().unwrap().spawn(&bp);
+                        let spawn_result = b.process.lock().unwrap().spawn(&bp, None);
                         match spawn_result {
                             Ok(()) => {
                                 b.set_binary_info(bp.clone(), pv.clone());
@@ -1103,6 +1117,7 @@ pub fn run() {
             show_notification,
             set_tray_badge,
             pi_restart,
+            pi_switch_cwd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running pi-desktop application");

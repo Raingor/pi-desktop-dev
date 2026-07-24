@@ -25,6 +25,8 @@ pub struct PiBridge {
     binary_path: String,
     /// Pi version
     pi_version: String,
+    /// Working directory for pi process (determines session storage path)
+    cwd: Option<String>,
     /// Pending responses keyed by command id, for request/response correlation
     pending_responses: Arc<Mutex<HashMap<String, mpsc::Sender<serde_json::Value>>>>,
 }
@@ -37,6 +39,7 @@ impl PiBridge {
             last_state: Arc::new(Mutex::new(None)),
             binary_path: String::new(),
             pi_version: String::new(),
+            cwd: None,
             pending_responses: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -179,8 +182,10 @@ impl PiBridge {
                                 continue;
                             }
 
-                            // Log first 200 chars of each line for debugging
-                            let log_preview = &trimmed[..trimmed.len().min(200)];
+                            // Log first 200 chars of each line for debugging.
+                            // Truncate by chars (not bytes) so multi-byte UTF-8
+                            // content (e.g. Chinese) never slices mid-codepoint and panics.
+                            let log_preview: String = trimmed.chars().take(200).collect();
                             log::info!("[pi stdout] {}", log_preview);
 
                             if let Some(val) = jsonl::parse_line(&trimmed) {
@@ -223,18 +228,25 @@ impl PiBridge {
     /// Restart pi process: kill, respawn with stored binary path, take stdout,
     /// and start a fresh reader thread. Returns Ok(()) on success.
     /// Emits `process_restarted` event on success, or `process_died` on failure.
-    pub fn restart_with_recovery(&mut self, handle: AppHandle) -> Result<(), String> {
+    /// If `cwd` is provided, pi runs in that directory (overrides stored cwd).
+    pub fn restart_with_recovery(&mut self, handle: AppHandle, cwd: Option<&str>) -> Result<(), String> {
         if self.binary_path.is_empty() {
             return Err("Cannot restart: binary_path is empty".to_string());
         }
 
-        log::info!("Restarting pi process (crash recovery)…");
+        // Update stored cwd if provided
+        if let Some(c) = cwd {
+            self.cwd = Some(c.to_string());
+        }
+
+        log::info!("Restarting pi process (crash recovery), cwd: {:?}…", &self.cwd);
         let bp = self.binary_path.clone();
+        let cwd_ref = self.cwd.as_deref();
 
         // Kill old process and spawn a new one
         {
             let mut process = self.process.lock().map_err(|e| e.to_string())?;
-            process.restart(&bp)?;
+            process.restart(&bp, cwd_ref)?;
         }
 
         // Take stdout and start a fresh reader thread

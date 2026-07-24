@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
+import { DownOutlined, RightOutlined } from '@ant-design/icons';
 import type { ChatMessage } from '../types';
 import type { InputMode } from '../stores/appStore';
 
@@ -109,7 +110,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(({ msg, index }) 
         }}
       >
         {msg.role === 'assistant' ? (
-          <div className="markdown-content">
+          <>
+            {msg.thinking ? <ThinkingBlock thinking={msg.thinking} isStreaming={!!msg.isStreaming} /> : null}
+            <div className="markdown-content">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
@@ -190,6 +193,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(({ msg, index }) 
               />
             )}
           </div>
+          </>
         ) : (
           <span style={{ whiteSpace: 'pre-wrap', fontSize: 14, color: 'var(--text-primary)', opacity: 0.9 }}>
             {msg.content}
@@ -214,5 +218,67 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(({ msg, index }) 
 });
 
 MessageBubble.displayName = 'MessageBubble';
+
+/**
+ * Collapsible block that surfaces pi's streamed reasoning (the "thinking"
+ * deltas) separately from the final reply, so the user can see the model's
+ * thought process without it polluting the main message.
+ */
+const ThinkingBlock: React.FC<{ thinking: string; isStreaming: boolean }> = ({ thinking, isStreaming }) => {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const trimmed = thinking.trim();
+  if (!trimmed) return null;
+  return (
+    <div
+      style={{
+        marginBottom: 10,
+        border: '1px solid rgba(124, 92, 252, 0.25)',
+        background: 'rgba(124, 92, 252, 0.06)',
+        borderRadius: 8,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 10px',
+          cursor: 'pointer',
+          fontSize: 11,
+          fontWeight: 600,
+          color: 'var(--accent-purple)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px',
+          userSelect: 'none',
+        }}
+      >
+        {open ? <DownOutlined style={{ fontSize: 10 }} /> : <RightOutlined style={{ fontSize: 10 }} />}
+        <span>💭 {t('chatWindow.thinking')}{isStreaming ? '…' : ''}</span>
+        <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontWeight: 400, textTransform: 'none' }}>
+          {trimmed.length}
+        </span>
+      </div>
+      {open && (
+        <div
+          style={{
+            padding: '4px 12px 10px',
+            fontSize: 12.5,
+            lineHeight: 1.6,
+            color: 'var(--text-secondary)',
+            whiteSpace: 'pre-wrap',
+            borderTop: '1px solid rgba(124, 92, 252, 0.15)',
+            maxHeight: 280,
+            overflowY: 'auto',
+          }}
+        >
+          {thinking}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default MessageBubble;
